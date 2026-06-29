@@ -1,0 +1,44 @@
+from app.services.embeddings import cosine_similarity, deterministic_embedding
+from app.services.eta import StageWork, estimate_completion_seconds, update_ema
+from app.services.retrieval import Candidate, reciprocal_rank_fusion, rerank_lexical
+
+
+def test_deterministic_embeddings_are_stable_and_semantic_enough() -> None:
+    left = deterministic_embedding("annual leave policy")
+    again = deterministic_embedding("annual leave policy")
+    right = deterministic_embedding("database recovery runbook")
+    assert left == again
+    assert cosine_similarity(left, again) > cosine_similarity(left, right)
+
+
+def test_rrf_merges_vector_and_keyword_rankings() -> None:
+    vector = [
+        Candidate("a", "d1", "Doc", "leave policy", 0.9, "vector", {}),
+        Candidate("b", "d2", "Doc", "remote work", 0.8, "vector", {}),
+    ]
+    keyword = [
+        Candidate("b", "d2", "Doc", "remote work", 0.7, "keyword", {}),
+        Candidate("c", "d3", "Doc", "security policy", 0.6, "keyword", {}),
+    ]
+    fused = reciprocal_rank_fusion(vector, keyword, k=60)
+    assert {candidate.chunk_id for candidate in fused} == {"a", "b", "c"}
+    assert fused[0].chunk_id == "b"
+
+
+def test_local_reranker_boosts_query_overlap() -> None:
+    candidates = [
+        Candidate("a", "d1", "Doc", "database backup procedure", 0.1, "hybrid", {}),
+        Candidate("b", "d2", "Doc", "annual leave request policy", 0.1, "hybrid", {}),
+    ]
+    reranked = rerank_lexical("leave policy", candidates)
+    assert reranked[0].chunk_id == "b"
+
+
+def test_eta_uses_observed_throughput_and_ema() -> None:
+    assert update_ema(10, 20) == 13.5
+    seconds, confidence = estimate_completion_seconds(
+        5,
+        [StageWork("embedding", remaining_units=100, observed_units_per_second=10, historical_units_per_second=None)],
+    )
+    assert seconds == 15
+    assert confidence == "High"

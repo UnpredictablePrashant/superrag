@@ -1,0 +1,14 @@
+node_modules
+apps/web/node_modules
+apps/web/.next
+packages/*/node_modules
+.git
+.pytest_cache
+.ruff_cache
+.mypy_cache
+__pycache__
+*.pyc
+coverage
+playwright-report
+test-results
+.env

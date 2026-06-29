@@ -106,7 +106,7 @@ jobs:
           username: ${{ env.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ env.EC2_PORT }}
-          source: deploy/ec2/docker-compose.ec2.yml,deploy/ec2/nginx/*
+          source: deploy/ec2/docker-compose.ec2.yml,deploy/ec2/nginx/rag-console-http.conf,deploy/ec2/nginx/rag-console-https.conf
           target: ${{ env.EC2_APP_DIR }}
           strip_components: 2
 
@@ -144,7 +144,16 @@ jobs:
               fi
             fi
 
-            sudo cp "${{ env.EC2_APP_DIR }}/nginx/rag-console-http.conf" /etc/nginx/sites-available/rag-console
+            http_config="$(find "${{ env.EC2_APP_DIR }}" -type f -name rag-console-http.conf | head -n 1)"
+            https_config="$(find "${{ env.EC2_APP_DIR }}" -type f -name rag-console-https.conf | head -n 1)"
+
+            if [ -z "${http_config}" ] || [ -z "${https_config}" ]; then
+              echo "Nginx config files were not copied to ${{ env.EC2_APP_DIR }}."
+              find "${{ env.EC2_APP_DIR }}" -maxdepth 4 -type f | sort
+              exit 1
+            fi
+
+            sudo cp "${http_config}" /etc/nginx/sites-available/rag-console
             sudo ln -sf /etc/nginx/sites-available/rag-console /etc/nginx/sites-enabled/rag-console
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t
@@ -159,7 +168,7 @@ jobs:
               fi
             fi
 
-            sudo cp "${{ env.EC2_APP_DIR }}/nginx/rag-console-https.conf" /etc/nginx/sites-available/rag-console
+            sudo cp "${https_config}" /etc/nginx/sites-available/rag-console
             sudo nginx -t
             sudo systemctl reload nginx
 

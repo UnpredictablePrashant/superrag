@@ -28,6 +28,10 @@ docker compose exec web npm run test
 docker compose exec web npm run lint
 ```
 
+## Deployment
+
+GitHub Actions deployment to a single EC2 instance at `https://rag.atharvaai.com` is available in `.github/workflows/deploy-ec2.yml`. See `docs/ec2-deployment.md` for the required EC2 setup, GitHub secrets, repository variables, and production env file format.
+
 ## What Is Implemented
 
 - Passwordless email OTP auth with expiry, resend cooldown, attempts, session cookies, logout, onboarding, invitations, and role checks.

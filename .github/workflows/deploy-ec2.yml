@@ -1,0 +1,162 @@
+name: Deploy to EC2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  EC2_HOST: ${{ vars.EC2_HOST || '18.188.234.72' }}
+  EC2_USER: ${{ vars.EC2_USER || 'ubuntu' }}
+  EC2_APP_DIR: ${{ vars.EC2_APP_DIR || '/opt/rag-console' }}
+  EC2_PORT: ${{ vars.EC2_PORT || '22' }}
+  NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'https://rag.atharvaai.com/api' }}
+
+jobs:
+  build-and-push:
+    name: Build and push images
+    runs-on: ubuntu-latest
+    outputs:
+      api_image: ${{ steps.images.outputs.api_image }}
+      web_image: ${{ steps.images.outputs.web_image }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image names
+        id: images
+        shell: bash
+        run: |
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          tag="${GITHUB_SHA}"
+          echo "api_image=ghcr.io/${owner}/rag-console-api:${tag}" >> "${GITHUB_OUTPUT}"
+          echo "web_image=ghcr.io/${owner}/rag-console-web:${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/api
+          push: true
+          tags: ${{ steps.images.outputs.api_image }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+      - name: Validate public API URL
+        shell: bash
+        run: |
+          if [ -z "${NEXT_PUBLIC_API_URL}" ]; then
+            echo "Set repository variable NEXT_PUBLIC_API_URL, for example https://rag.atharvaai.com/api"
+            exit 1
+          fi
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          target: runner
+          push: true
+          tags: ${{ steps.images.outputs.web_image }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ env.NEXT_PUBLIC_API_URL }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+  deploy:
+    name: Deploy on EC2
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout deployment files
+        uses: actions/checkout@v4
+
+      - name: Create app directory
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.EC2_HOST }}
+          username: ${{ env.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ env.EC2_PORT }}
+          script: |
+            set -eu
+            sudo mkdir -p "${{ env.EC2_APP_DIR }}"
+            sudo chown "${USER}:${USER}" "${{ env.EC2_APP_DIR }}"
+
+      - name: Copy Compose file
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ env.EC2_HOST }}
+          username: ${{ env.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ env.EC2_PORT }}
+          source: deploy/ec2/docker-compose.ec2.yml,deploy/ec2/Caddyfile
+          target: ${{ env.EC2_APP_DIR }}
+          strip_components: 2
+
+      - name: Restart services
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          API_IMAGE: ${{ needs.build-and-push.outputs.api_image }}
+          WEB_IMAGE: ${{ needs.build-and-push.outputs.web_image }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          EC2_ENV_FILE_B64: ${{ secrets.EC2_ENV_FILE_B64 }}
+        with:
+          host: ${{ env.EC2_HOST }}
+          username: ${{ env.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ env.EC2_PORT }}
+          envs: API_IMAGE,WEB_IMAGE,GHCR_USERNAME,GHCR_TOKEN,EC2_ENV_FILE_B64
+          script: |
+            set -eu
+
+            cd "${{ env.EC2_APP_DIR }}"
+
+            if [ -n "${GHCR_TOKEN:-}" ]; then
+              echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
+            fi
+
+            if [ -n "${EC2_ENV_FILE_B64:-}" ]; then
+              printf '%s' "${EC2_ENV_FILE_B64}" | base64 -d > .env
+              chmod 600 .env
+            fi
+
+            if [ ! -s .env ]; then
+              echo "Missing ${{ env.EC2_APP_DIR }}/.env. Set EC2_ENV_FILE_B64 or create the file on the instance."
+              exit 1
+            fi
+
+            export API_IMAGE
+            export WEB_IMAGE
+
+            docker compose -f docker-compose.ec2.yml pull
+            docker compose -f docker-compose.ec2.yml up -d --remove-orphans
+
+            i=0
+            until docker compose -f docker-compose.ec2.yml exec -T api curl -fsS http://localhost:8000/healthz >/dev/null; do
+              i=$((i + 1))
+              if [ "${i}" -ge 30 ]; then
+                docker compose -f docker-compose.ec2.yml logs --tail=100 api
+                exit 1
+              fi
+              sleep 5
+            done
+
+            docker image prune -f --filter "until=168h"

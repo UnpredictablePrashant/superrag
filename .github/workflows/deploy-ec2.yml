@@ -106,7 +106,7 @@ jobs:
           username: ${{ env.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ env.EC2_PORT }}
-          source: deploy/ec2/docker-compose.ec2.yml,deploy/ec2/nginx/rag-console-http.conf,deploy/ec2/nginx/rag-console-https.conf
+          source: deploy/ec2/docker-compose.ec2.yml
           target: ${{ env.EC2_APP_DIR }}
           strip_components: 2
 
@@ -144,16 +144,67 @@ jobs:
               fi
             fi
 
-            http_config="$(find "${{ env.EC2_APP_DIR }}" -type f -name rag-console-http.conf | head -n 1)"
-            https_config="$(find "${{ env.EC2_APP_DIR }}" -type f -name rag-console-https.conf | head -n 1)"
+            cat > /tmp/rag-console-http.conf <<'NGINX_HTTP'
+            server {
+                listen 80;
+                listen [::]:80;
+                server_name rag.atharvaai.com;
 
-            if [ -z "${http_config}" ] || [ -z "${https_config}" ]; then
-              echo "Nginx config files were not copied to ${{ env.EC2_APP_DIR }}."
-              find "${{ env.EC2_APP_DIR }}" -maxdepth 4 -type f | sort
-              exit 1
-            fi
+                client_max_body_size 100m;
 
-            sudo cp "${http_config}" /etc/nginx/sites-available/rag-console
+                location /.well-known/acme-challenge/ {
+                    root /var/www/letsencrypt;
+                    default_type "text/plain";
+                }
+
+                location /api/ {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_http_version 1.1;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_read_timeout 300s;
+                }
+
+                location /docs {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location /redoc {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location = /openapi.json {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location = /healthz {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location / {
+                    proxy_pass http://127.0.0.1:3000;
+                    proxy_http_version 1.1;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                }
+            }
+            NGINX_HTTP
+
+            sudo cp /tmp/rag-console-http.conf /etc/nginx/sites-available/rag-console
             sudo ln -sf /etc/nginx/sites-available/rag-console /etc/nginx/sites-enabled/rag-console
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t
@@ -168,7 +219,83 @@ jobs:
               fi
             fi
 
-            sudo cp "${https_config}" /etc/nginx/sites-available/rag-console
+            cat > /tmp/rag-console-https.conf <<'NGINX_HTTPS'
+            server {
+                listen 80;
+                listen [::]:80;
+                server_name rag.atharvaai.com;
+
+                location /.well-known/acme-challenge/ {
+                    root /var/www/letsencrypt;
+                    default_type "text/plain";
+                }
+
+                location / {
+                    return 301 https://$host$request_uri;
+                }
+            }
+
+            server {
+                listen 443 ssl http2;
+                listen [::]:443 ssl http2;
+                server_name rag.atharvaai.com;
+
+                ssl_certificate /etc/letsencrypt/live/rag.atharvaai.com/fullchain.pem;
+                ssl_certificate_key /etc/letsencrypt/live/rag.atharvaai.com/privkey.pem;
+                ssl_session_cache shared:SSL:10m;
+                ssl_session_timeout 1d;
+                ssl_session_tickets off;
+
+                client_max_body_size 100m;
+
+                location /api/ {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_http_version 1.1;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_read_timeout 300s;
+                }
+
+                location /docs {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location /redoc {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location = /openapi.json {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location = /healthz {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                location / {
+                    proxy_pass http://127.0.0.1:3000;
+                    proxy_http_version 1.1;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                }
+            }
+            NGINX_HTTPS
+
+            sudo cp /tmp/rag-console-https.conf /etc/nginx/sites-available/rag-console
             sudo nginx -t
             sudo systemctl reload nginx
 

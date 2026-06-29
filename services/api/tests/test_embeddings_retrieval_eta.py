@@ -1,5 +1,9 @@
+import asyncio
+
 from app.services.embeddings import cosine_similarity, deterministic_embedding
 from app.services.eta import StageWork, estimate_completion_seconds, update_ema
+from app.services.pipeline import _is_embedding_backfill
+from app.services.providers import embedding_dimension_for_model, infer_capability
 from app.services.retrieval import Candidate, reciprocal_rank_fusion, rerank_lexical
 
 
@@ -9,6 +13,31 @@ def test_deterministic_embeddings_are_stable_and_semantic_enough() -> None:
     right = deterministic_embedding("database recovery runbook")
     assert left == again
     assert cosine_similarity(left, again) > cosine_similarity(left, right)
+
+
+def test_provider_capability_infers_openai_embedding_dimensions() -> None:
+    capability = infer_capability("OpenAI", "text-embedding-3-large")
+
+    assert capability.supports_embeddings
+    assert not capability.supports_chat
+    assert embedding_dimension_for_model("OpenAI", "text-embedding-3-large") == 3072
+
+
+def test_local_embedding_provider_can_use_profile_dimension() -> None:
+    from app.services.embeddings import get_embedding_provider
+
+    provider = get_embedding_provider("Local", dimension=384)
+    vectors = asyncio.run(provider.embed_texts(["annual leave policy"]))
+
+    assert len(vectors) == 1
+    assert len(vectors[0]) == 384
+
+
+def test_pipeline_embedding_backfill_mode_is_explicit() -> None:
+    class Run:
+        retrieval_index_config = {"migration_mode": "embedding_backfill"}
+
+    assert _is_embedding_backfill(Run())
 
 
 def test_rrf_merges_vector_and_keyword_rankings() -> None:

@@ -9,6 +9,11 @@
 7. Start ingestion and open the pipeline detail page.
 8. Ask a chat question such as `What is the leave policy?`.
 
+Embedding data migrations:
+
+- To migrate an already-indexed document set to a new embedding profile without deleting existing chunks or vectors, create a pipeline run with `retrieval_index_config: {"migration_mode": "embedding_backfill"}` and the target `embedding_profile_id`.
+- The backfill mode only embeds existing chunks that are missing vectors for the target profile. It preserves old vectors and switches the knowledge base default embedding profile only after the run completes successfully.
+
 Local services:
 
 - PostgreSQL/pgvector: `localhost:5432`

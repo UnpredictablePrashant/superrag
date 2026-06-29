@@ -15,6 +15,8 @@ from app.db.session import SessionLocal, get_db
 from app.models.entities import (
     Document,
     DocumentStatus,
+    EmbeddingProfile,
+    KnowledgeBase,
     PipelineRun,
     PipelineRunDocument,
     PipelineStage,
@@ -33,6 +35,15 @@ def create_pipeline_run(
 ) -> PipelineRunOut:
     if not payload.document_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Select at least one document.")
+    embedding_backfill = _is_embedding_backfill(payload.retrieval_index_config)
+    if embedding_backfill and not payload.embedding_profile_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Embedding backfill runs require an embedding_profile_id.",
+        )
+    kb = db.get(KnowledgeBase, payload.knowledge_base_id)
+    if not kb or kb.organization_id != ctx.organization_id or kb.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Knowledge base not found.")
     documents = list(
         db.scalars(
             select(Document).where(
@@ -44,6 +55,16 @@ def create_pipeline_run(
     )
     if len(documents) != len(payload.document_ids):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="One or more documents were not found.")
+    if payload.embedding_profile_id:
+        embedding_profile = db.get(EmbeddingProfile, payload.embedding_profile_id)
+        if (
+            not embedding_profile
+            or embedding_profile.organization_id != ctx.organization_id
+            or embedding_profile.deleted_at is not None
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Embedding profile not found.")
+        if not embedding_backfill:
+            kb.default_embedding_profile_id = embedding_profile.id
     run = PipelineRun(
         organization_id=ctx.organization_id,
         knowledge_base_id=payload.knowledge_base_id,
@@ -59,7 +80,8 @@ def create_pipeline_run(
     db.add(run)
     db.flush()
     for document in documents:
-        document.processing_status = DocumentStatus.QUEUED
+        if not embedding_backfill:
+            document.processing_status = DocumentStatus.QUEUED
         db.add(
             PipelineRunDocument(
                 organization_id=ctx.organization_id,
@@ -72,6 +94,10 @@ def create_pipeline_run(
     process_pipeline_run_task.delay(str(run.id))
     db.refresh(run)
     return _run_out(db, run)
+
+
+def _is_embedding_backfill(config: dict) -> bool:
+    return config.get("migration_mode") == "embedding_backfill" or config.get("embedding_backfill") is True
 
 
 @router.get("", response_model=list[PipelineRunOut])

@@ -9,7 +9,6 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
-    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -200,6 +199,47 @@ class ProviderConnection(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
     status: Mapped[str] = mapped_column(String(40), default="untested", nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class TelegramIntegration(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
+    __tablename__ = "telegram_integrations"
+    __table_args__ = (UniqueConstraint("organization_id"),)
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    encrypted_bot_token: Mapped[str | None] = mapped_column(Text)
+    masked_bot_token: Mapped[str | None] = mapped_column(String(32))
+    bot_username: Mapped[str | None] = mapped_column(String(160))
+    webhook_secret_token: Mapped[str] = mapped_column(String(160), nullable=False)
+    default_knowledge_base_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id"))
+    default_chat_model_profile_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("model_profiles.id"))
+    default_cleanup_profile_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("cleanup_profiles.id"))
+    default_chunking_profile_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chunking_profiles.id"))
+    default_embedding_profile_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("embedding_profiles.id"))
+    auto_ingest_text: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    auto_ingest_documents: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    auto_ingest_voice: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class TelegramAllowedUser(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
+    __tablename__ = "telegram_allowed_users"
+    __table_args__ = (
+        UniqueConstraint("integration_id", "telegram_user_id"),
+        UniqueConstraint("integration_id", "username"),
+        UniqueConstraint("integration_id", "phone_number"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    integration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_integrations.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    username: Mapped[str | None] = mapped_column(String(160))
+    phone_number: Mapped[str | None] = mapped_column(String(40))
+    display_name: Mapped[str | None] = mapped_column(String(220))
+    can_ingest: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    can_query: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
 class ModelProfile(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
@@ -397,7 +437,6 @@ class EmbeddingVector(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "embedding_vectors"
     __table_args__ = (
         UniqueConstraint("chunk_id", "embedding_profile_id"),
-        CheckConstraint("embedding_dimension = 384", name="embedding_vectors_dimension_check"),
         Index("ix_embedding_vectors_org_kb", "organization_id", "knowledge_base_id"),
     )
 
@@ -408,7 +447,7 @@ class EmbeddingVector(UUIDMixin, TimestampMixin, Base):
     embedding_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("embedding_profiles.id"), index=True)
     embedding_model: Mapped[str] = mapped_column(String(160), nullable=False)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector(384), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
 
 
 class PipelineRun(UUIDMixin, TimestampMixin, Base):
@@ -503,6 +542,27 @@ class RetrievalEvent(UUIDMixin, TimestampMixin, Base):
     final_context_chunks: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)
     token_usage: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     latency_ms_by_stage: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class TelegramMessageLog(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "telegram_message_logs"
+    __table_args__ = (
+        UniqueConstraint("integration_id", "telegram_chat_id", "telegram_message_id"),
+        Index("ix_telegram_logs_org_created", "organization_id", "created_at"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    integration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_integrations.id", ondelete="CASCADE"), index=True)
+    telegram_chat_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    telegram_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="received", nullable=False)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"))
+    pipeline_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("pipeline_runs.id"))
+    error: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
 
 class Notification(UUIDMixin, TimestampMixin, Base):

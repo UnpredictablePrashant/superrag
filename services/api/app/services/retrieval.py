@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.models.entities import RetrievalEvent
-from app.services.embeddings import deterministic_embedding
+from app.core.security import decrypt_secret
+from app.models.entities import EmbeddingProfile, KnowledgeBase, ProviderConnection, RetrievalEvent
+from app.services.embeddings import get_embedding_provider
+from app.services.profiles import ensure_default_profiles
 
 
 @dataclass
@@ -82,10 +85,18 @@ def retrieve(
 ) -> tuple[list[Candidate], RetrievalEvent]:
     filters = filters or {}
     started = time.perf_counter()
-    embedding = deterministic_embedding(query)
+    embedding_profile = _resolve_embedding_profile(db, organization_id, filters, knowledge_base_ids)
+    embedding = _embed_query(db, organization_id, query, embedding_profile)
     vector_literal = "[" + ",".join(str(value) for value in embedding) + "]"
     vector_candidates = _vector_search(
-        db, organization_id, user_id, role, vector_literal, knowledge_base_ids, filters
+        db,
+        organization_id,
+        user_id,
+        role,
+        vector_literal,
+        str(embedding_profile.id),
+        knowledge_base_ids,
+        filters,
     )
     vector_ms = int((time.perf_counter() - started) * 1000)
     keyword_started = time.perf_counter()
@@ -101,7 +112,12 @@ def retrieve(
         chat_session_id=chat_session_id,
         original_query=query,
         rewritten_query=query.strip(),
-        applied_filters={"knowledge_base_ids": knowledge_base_ids or [], **filters},
+        applied_filters={
+            "knowledge_base_ids": knowledge_base_ids or [],
+            "embedding_profile_id": str(embedding_profile.id),
+            "embedding_model": embedding_profile.model_name,
+            **filters,
+        },
         vector_candidates=[_candidate_debug(candidate) for candidate in vector_candidates],
         keyword_candidates=[_candidate_debug(candidate) for candidate in keyword_candidates],
         rrf_ranking=[_candidate_debug(candidate) for candidate in rrf],
@@ -169,6 +185,7 @@ def _vector_search(
     user_id: UUID,
     role: str,
     vector_literal: str,
+    embedding_profile_id: str,
     knowledge_base_ids: list[str] | None,
     filters: dict[str, Any],
 ) -> list[Candidate]:
@@ -191,6 +208,7 @@ def _vector_search(
         JOIN embedding_vectors ev ON ev.chunk_id = c.id
         JOIN documents d ON d.id = c.document_id
         WHERE c.organization_id = :organization_id
+          AND ev.embedding_profile_id = CAST(:embedding_profile_id AS uuid)
           AND {base_where}
           {_access_clause()}
         ORDER BY ev.embedding <=> CAST(:embedding AS vector)
@@ -204,6 +222,7 @@ def _vector_search(
             "user_id": str(user_id),
             "role": role,
             "embedding": vector_literal,
+            "embedding_profile_id": embedding_profile_id,
             "limit": filters.get("vector_candidate_count", 40),
             **params,
         },
@@ -281,3 +300,77 @@ def _candidate_debug(candidate: Candidate) -> dict[str, Any]:
         "preview": candidate.text[:280],
         "metadata": candidate.metadata,
     }
+
+
+def _resolve_embedding_profile(
+    db: Session,
+    organization_id: UUID,
+    filters: dict[str, Any],
+    knowledge_base_ids: list[str] | None,
+) -> EmbeddingProfile:
+    ensure_default_profiles(db, organization_id)
+    db.flush()
+    profile_id = filters.get("embedding_profile_id")
+    if not profile_id and knowledge_base_ids and len(knowledge_base_ids) == 1:
+        try:
+            kb = db.get(KnowledgeBase, UUID(str(knowledge_base_ids[0])))
+        except ValueError:
+            kb = None
+        if (
+            kb
+            and kb.organization_id == organization_id
+            and kb.deleted_at is None
+            and kb.default_embedding_profile_id
+        ):
+            profile_id = kb.default_embedding_profile_id
+    query = select(EmbeddingProfile).where(
+        EmbeddingProfile.organization_id.in_([organization_id, None])
+    )
+    if profile_id:
+        query = query.where(EmbeddingProfile.id == profile_id)
+    else:
+        query = query.where(EmbeddingProfile.is_active.is_(True)).order_by(
+            EmbeddingProfile.organization_id.desc().nullslast(),
+            EmbeddingProfile.created_at,
+        )
+    profile = db.scalar(query)
+    if not profile:
+        raise ValueError("Embedding profile not found.")
+    return profile
+
+
+def _embed_query(
+    db: Session,
+    organization_id: UUID,
+    query: str,
+    embedding_profile: EmbeddingProfile,
+) -> list[float]:
+    connection: ProviderConnection | None = None
+    api_key: str | None = None
+    if embedding_profile.provider.value != "Local":
+        if not embedding_profile.provider_connection_id:
+            raise ValueError("Embedding profile requires a provider connection.")
+        connection = db.get(ProviderConnection, embedding_profile.provider_connection_id)
+        if (
+            not connection
+            or connection.organization_id != organization_id
+            or connection.deleted_at is not None
+            or not connection.is_enabled
+        ):
+            raise ValueError("Embedding provider connection is not available.")
+        api_key = decrypt_secret(connection.encrypted_api_key) if connection.encrypted_api_key else None
+    provider = get_embedding_provider(
+        embedding_profile.provider.value,
+        model_name=embedding_profile.model_name,
+        api_key=api_key,
+        base_url=connection.base_url if connection else None,
+        dimension=embedding_profile.embedding_dimension,
+    )
+    vectors = asyncio.run(provider.embed_texts([query]))
+    vector = vectors[0] if vectors else []
+    if len(vector) != embedding_profile.embedding_dimension:
+        raise ValueError(
+            f"Embedding provider returned {len(vector)} dimensions; "
+            f"profile expects {embedding_profile.embedding_dimension}."
+        )
+    return vector

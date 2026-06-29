@@ -8,7 +8,7 @@ import { formatBytes } from "@/lib/format";
 import type { DocumentRecord, KnowledgeBase, PipelineRun } from "@rag-console/shared-types";
 import { Badge, Button, Input, Label, Panel, Select } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Check, FileText, FolderPlus, Play, UploadCloud } from "lucide-react";
+import { ArrowRight, Check, Cloud, FileText, FolderPlus, HardDrive, Mail, Play, UploadCloud } from "lucide-react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 
@@ -299,6 +299,14 @@ function SelectDocuments({
   selectedExistingDocs: string[];
   setSelectedExistingDocs: (ids: string[]) => void;
 }) {
+  const [source, setSource] = React.useState("files");
+  const sourceOptions = [
+    { id: "files", label: "Local files", icon: UploadCloud, enabled: true },
+    { id: "existing", label: "Uploaded", icon: FileText, enabled: true },
+    { id: "google-drive", label: "Google Drive", icon: Cloud, enabled: false },
+    { id: "gmail", label: "Gmail", icon: Mail, enabled: false },
+    { id: "one-drive", label: "OneDrive", icon: HardDrive, enabled: false },
+  ];
   function toggle(id: string) {
     setSelectedExistingDocs(
       selectedExistingDocs.includes(id) ? selectedExistingDocs.filter((value) => value !== id) : [...selectedExistingDocs, id],
@@ -310,30 +318,71 @@ function SelectDocuments({
         <h3 className="text-lg font-semibold text-zinc-950">Select documents</h3>
         <p className="mt-1 text-sm text-zinc-500">Choose local files or re-run ingestion for uploaded documents.</p>
       </div>
-      <label className="flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-zinc-300 bg-zinc-50 text-center hover:bg-white">
-        <UploadCloud className="h-9 w-9 text-zinc-400" aria-hidden />
-        <span className="mt-3 text-sm font-medium text-zinc-950">Select files</span>
-        <span className="mt-1 text-xs text-zinc-500">PDF, DOCX, PPTX, XLSX, CSV, TXT, Markdown, HTML, JSON, XML</span>
-        <input
-          className="sr-only"
-          type="file"
-          multiple
-          onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
-        />
-      </label>
-      {files.length ? (
-        <div className="grid gap-2">
-          {files.map((file) => (
-            <div key={`${file.name}-${file.size}`} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2">
-              <span className="text-sm font-medium text-zinc-800">{file.name}</span>
-              <Badge>{formatBytes(file.size)}</Badge>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        {sourceOptions.map((option) => {
+          const Icon = option.icon;
+          return (
+            <button
+              key={option.id}
+              disabled={!option.enabled}
+              className={`rounded-md border p-3 text-left transition ${
+                source === option.id
+                  ? "border-emerald-300 bg-emerald-50"
+                  : "border-zinc-200 bg-white hover:border-zinc-300"
+              } ${option.enabled ? "" : "cursor-not-allowed opacity-60"}`}
+              onClick={() => setSource(option.id)}
+            >
+              <Icon className="h-5 w-5 text-zinc-500" aria-hidden />
+              <span className="mt-2 block text-sm font-medium text-zinc-950">{option.label}</span>
+              {!option.enabled ? <Badge className="mt-2">Connector</Badge> : null}
+            </button>
+          );
+        })}
+      </div>
+      {source === "files" ? (
+        <>
+          <label className="flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-zinc-300 bg-zinc-50 text-center hover:bg-white">
+            <UploadCloud className="h-9 w-9 text-zinc-400" aria-hidden />
+            <span className="mt-3 text-sm font-medium text-zinc-950">Select files</span>
+            <span className="mt-1 text-xs text-zinc-500">PDF, DOCX, PPTX, XLSX, CSV, TXT, Markdown, HTML, JSON, XML</span>
+            <input
+              className="sr-only"
+              type="file"
+              multiple
+              onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+            />
+          </label>
+          {files.length ? (
+            <div className="grid gap-2">
+              {files.map((file) => (
+                <div key={`${file.name}-${file.size}`} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2">
+                  <span className="text-sm font-medium text-zinc-800">{file.name}</span>
+                  <Badge>{formatBytes(file.size)}</Badge>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          ) : null}
+        </>
       ) : null}
-      <div>
-        <h4 className="mb-2 text-sm font-semibold text-zinc-950">Existing uploaded documents</h4>
-        {existingDocs.length ? (
+      {source === "existing" ? (
+        <div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold text-zinc-950">Existing uploaded documents</h4>
+            {existingDocs.length ? (
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  setSelectedExistingDocs(
+                    selectedExistingDocs.length === existingDocs.length ? [] : existingDocs.map((doc) => doc.id),
+                  )
+                }
+              >
+                <Check className="h-4 w-4" aria-hidden />
+                {selectedExistingDocs.length === existingDocs.length ? "Clear" : "Select all"}
+              </Button>
+            ) : null}
+          </div>
+          {existingDocs.length ? (
           <div className="grid gap-2">
             {existingDocs.map((doc) => (
               <label key={doc.id} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2">
@@ -349,7 +398,8 @@ function SelectDocuments({
         ) : (
           <EmptyState icon={FileText} title="No uploaded documents" body="Upload files in this wizard to create the first document set." />
         )}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }

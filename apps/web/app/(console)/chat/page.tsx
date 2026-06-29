@@ -1,7 +1,7 @@
 "use client";
 
 import { ErrorBox } from "@/components/error-box";
-import { API_URL, api, getChatSession, listChatSessions, listKnowledgeBases } from "@/lib/api";
+import { API_URL, api, getChatSession, listChatSessions, listKnowledgeBases, listProfiles } from "@/lib/api";
 import type { ChatMessage, Citation } from "@rag-console/shared-types";
 import { Badge, Button, Panel, Select, Textarea } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -13,6 +13,7 @@ export default function ChatPage() {
   const [sessionId, setSessionId] = React.useState("");
   const [prompt, setPrompt] = React.useState("");
   const [selectedKbIds, setSelectedKbIds] = React.useState<string[]>([]);
+  const [selectedModelProfileId, setSelectedModelProfileId] = React.useState("");
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = React.useState("");
   const [selectedCitation, setSelectedCitation] = React.useState<Citation | null>(null);
@@ -22,6 +23,7 @@ export default function ChatPage() {
 
   const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
   const sessions = useQuery({ queryKey: ["chat-sessions"], queryFn: listChatSessions });
+  const profiles = useQuery({ queryKey: ["profiles"], queryFn: listProfiles });
   const activeSession = useQuery({
     queryKey: ["chat-session", sessionId],
     enabled: Boolean(sessionId),
@@ -33,16 +35,28 @@ export default function ChatPage() {
   }, [sessionId, sessions.data]);
   React.useEffect(() => {
     if (activeSession.data?.messages) setMessages(activeSession.data.messages);
+    if (activeSession.data?.session.model_profile_id) {
+      setSelectedModelProfileId(activeSession.data.session.model_profile_id);
+    }
   }, [activeSession.data]);
   React.useEffect(() => {
     if (!selectedKbIds.length && kbs.data?.[0]) setSelectedKbIds([kbs.data[0].id]);
   }, [kbs.data, selectedKbIds.length]);
+  React.useEffect(() => {
+    if (!selectedModelProfileId && profiles.data?.chat_profiles[0]) {
+      setSelectedModelProfileId(profiles.data.chat_profiles[0].id);
+    }
+  }, [profiles.data, selectedModelProfileId]);
 
   const createSession = useMutation({
     mutationFn: () =>
       api<{ id: string; title: string }>("/chat-sessions", {
         method: "POST",
-        body: JSON.stringify({ title: "New chat", knowledge_base_ids: selectedKbIds }),
+        body: JSON.stringify({
+          title: "New chat",
+          knowledge_base_ids: selectedKbIds,
+          model_profile_id: selectedModelProfileId || undefined,
+        }),
       }),
     onSuccess: (session) => {
       setSessionId(session.id);
@@ -60,10 +74,19 @@ export default function ChatPage() {
       if (!id) {
         const created = await api<{ id: string }>("/chat-sessions", {
           method: "POST",
-          body: JSON.stringify({ title: "New chat", knowledge_base_ids: selectedKbIds }),
+          body: JSON.stringify({
+            title: "New chat",
+            knowledge_base_ids: selectedKbIds,
+            model_profile_id: selectedModelProfileId || undefined,
+          }),
         });
         id = created.id;
         setSessionId(id);
+      } else if (selectedModelProfileId && activeSession.data?.session.model_profile_id !== selectedModelProfileId) {
+        await api(`/chat-sessions/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ model_profile_id: selectedModelProfileId }),
+        });
       }
       const turn = await api<{
         user_message: ChatMessage;
@@ -111,6 +134,7 @@ export default function ChatPage() {
   }
 
   const selectedKbName = kbs.data?.filter((kb) => selectedKbIds.includes(kb.id)).map((kb) => kb.name).join(", ");
+  const selectedModel = profiles.data?.chat_profiles.find((profile) => profile.id === selectedModelProfileId);
 
   return (
     <div className="grid h-[calc(100vh-112px)] min-h-[680px] gap-4 xl:grid-cols-[260px_1fr_340px]">
@@ -141,7 +165,7 @@ export default function ChatPage() {
             <h2 className="font-semibold text-zinc-950">Grounded Chat</h2>
             <p className="text-xs text-zinc-500">Knowledge bases: {selectedKbName || "None selected"}</p>
           </div>
-          <Badge tone="blue">Local grounded responder</Badge>
+          <Badge tone="blue">{selectedModel ? `${selectedModel.provider} / ${selectedModel.model_name}` : "Local grounded responder"}</Badge>
         </div>
         <div className="min-h-0 flex-1 space-y-4 overflow-auto bg-zinc-50 p-5">
           <ErrorBox message={error} />
@@ -212,9 +236,15 @@ export default function ChatPage() {
               ))}
             </Select>
           </div>
-          <div className="rounded-md bg-zinc-50 p-3 text-sm text-zinc-600">
-            <p className="font-medium text-zinc-950">Model</p>
-            <p className="mt-1">Local grounded responder for demo mode. Provider adapters are configured in Settings.</p>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-800">Model</label>
+            <Select value={selectedModelProfileId} onChange={(event) => setSelectedModelProfileId(event.target.value)}>
+              {(profiles.data?.chat_profiles ?? []).map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.provider} / {profile.model_name}
+                </option>
+              ))}
+            </Select>
           </div>
           {selectedCitation ? (
             <div className="rounded-md border border-zinc-200 p-3">

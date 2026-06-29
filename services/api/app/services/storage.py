@@ -148,6 +148,13 @@ def get_object_bytes(object_key: str) -> bytes:
     return response["Body"].read()
 
 
+def put_object_bytes(object_key: str, data: bytes, content_type: str | None = None) -> None:
+    params: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key, "Body": data}
+    if content_type:
+        params["ContentType"] = content_type
+    internal_s3_client().put_object(**params)
+
+
 def head_object(object_key: str) -> dict:
     return internal_s3_client().head_object(Bucket=settings.s3_bucket, Key=object_key)
 

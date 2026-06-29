@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from alembic import op
-
 from app.db.base import Base
 from app.models import entities  # noqa: F401
 
@@ -15,10 +14,6 @@ def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     bind = op.get_bind()
     Base.metadata.create_all(bind=bind)
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_embedding_vectors_hnsw "
-        "ON embedding_vectors USING hnsw (embedding vector_cosine_ops)"
-    )
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_chunks_fts "
         "ON chunks USING gin (to_tsvector('english', coalesce(text, '')))"
@@ -42,6 +37,9 @@ def upgrade() -> None:
         "retrieval_events",
         "notifications",
         "audit_logs",
+        "telegram_integrations",
+        "telegram_allowed_users",
+        "telegram_message_logs",
     ):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
 

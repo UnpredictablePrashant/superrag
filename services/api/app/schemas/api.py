@@ -257,6 +257,97 @@ class ProfileOut(APIModel):
     config: dict[str, Any] = {}
 
 
+class ModelProfileCreateIn(BaseModel):
+    provider_connection_id: UUID | None = None
+    name: str = Field(min_length=1, max_length=160)
+    model_name: str = Field(min_length=1, max_length=160)
+    supports_streaming: bool = True
+    supports_structured_output: bool = False
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    is_default: bool = False
+    config: dict[str, Any] = {}
+
+
+class EmbeddingProfileCreateIn(BaseModel):
+    provider_connection_id: UUID | None = None
+    name: str = Field(min_length=1, max_length=160)
+    model_name: str = Field(min_length=1, max_length=160)
+    embedding_dimension: int = Field(gt=0, le=4096)
+    batch_size: int = Field(default=64, gt=0, le=2048)
+    rate_limit_per_minute: int | None = Field(default=None, gt=0)
+    normalization: str = "l2"
+    is_active: bool = True
+    config: dict[str, Any] = {}
+
+
+class TelegramIntegrationPatchIn(BaseModel):
+    bot_token: str | None = Field(default=None, min_length=20)
+    bot_username: str | None = None
+    default_knowledge_base_id: UUID | None = None
+    default_chat_model_profile_id: UUID | None = None
+    default_cleanup_profile_id: UUID | None = None
+    default_chunking_profile_id: UUID | None = None
+    default_embedding_profile_id: UUID | None = None
+    auto_ingest_text: bool | None = None
+    auto_ingest_documents: bool | None = None
+    auto_ingest_voice: bool | None = None
+    is_enabled: bool | None = None
+    config: dict[str, Any] | None = None
+
+
+class TelegramIntegrationOut(APIModel):
+    id: UUID
+    bot_username: str | None
+    masked_bot_token: str | None
+    webhook_secret_token: str
+    webhook_url: str
+    default_knowledge_base_id: UUID | None
+    default_chat_model_profile_id: UUID | None
+    default_cleanup_profile_id: UUID | None
+    default_chunking_profile_id: UUID | None
+    default_embedding_profile_id: UUID | None
+    auto_ingest_text: bool
+    auto_ingest_documents: bool
+    auto_ingest_voice: bool
+    is_enabled: bool
+    config: dict[str, Any]
+
+
+class TelegramAllowedUserCreateIn(BaseModel):
+    telegram_user_id: int | None = None
+    username: str | None = None
+    phone_number: str | None = None
+    display_name: str | None = None
+    user_id: UUID | None = None
+    can_ingest: bool = True
+    can_query: bool = True
+
+
+class TelegramAllowedUserPatchIn(BaseModel):
+    telegram_user_id: int | None = None
+    username: str | None = None
+    phone_number: str | None = None
+    display_name: str | None = None
+    user_id: UUID | None = None
+    can_ingest: bool | None = None
+    can_query: bool | None = None
+    is_enabled: bool | None = None
+
+
+class TelegramAllowedUserOut(APIModel):
+    id: UUID
+    telegram_user_id: int | None
+    username: str | None
+    phone_number: str | None
+    display_name: str | None
+    user_id: UUID | None
+    can_ingest: bool
+    can_query: bool
+    is_enabled: bool
+    created_at: datetime
+
+
 class ChatSessionCreateIn(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 

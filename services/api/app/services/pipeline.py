@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.core.security import sha256_bytes
+from app.core.security import decrypt_secret, sha256_bytes
 from app.models.entities import (
     Chunk,
     ChunkingProfile,
@@ -20,16 +20,19 @@ from app.models.entities import (
     DocumentVersion,
     EmbeddingProfile,
     EmbeddingVector,
+    KnowledgeBase,
     Notification,
     PipelineRun,
     PipelineRunDocument,
     PipelineStage,
+    ProviderConnection,
 )
 from app.services.chunking import chunk_text, configuration_hash
 from app.services.cleanup import clean_text
 from app.services.embeddings import get_embedding_provider
 from app.services.eta import StageWork, estimate_completion_seconds
 from app.services.extraction import extract_document
+from app.services.profiles import ensure_default_profiles
 from app.services.quality import analyze_quality
 from app.services.storage import get_object_bytes
 
@@ -79,6 +82,10 @@ def process_pipeline_run(db: Session, pipeline_run_id: UUID) -> None:
             db.commit()
 
     failed = any(doc.status == PipelineStage.FAILED for doc in run_docs)
+    if _is_embedding_backfill(run) and not failed and run.embedding_profile_id:
+        kb = db.get(KnowledgeBase, run.knowledge_base_id)
+        if kb and kb.organization_id == run.organization_id:
+            kb.default_embedding_profile_id = run.embedding_profile_id
     warning_count = sum(len(doc.warnings or []) for doc in run_docs)
     run.current_stage = PipelineStage.COMPLETED_WITH_WARNINGS if failed or warning_count else PipelineStage.COMPLETED
     run.progress_percentage = 100
@@ -102,6 +109,9 @@ def _process_document(db: Session, run: PipelineRun, run_doc: PipelineRunDocumen
     document = db.get(Document, run_doc.document_id)
     if not document or document.organization_id != run.organization_id:
         raise ValueError("Document not found in organization.")
+    if _is_embedding_backfill(run):
+        _process_embedding_backfill_document(db, run, run_doc, document)
+        return
     version = db.scalar(
         select(DocumentVersion)
         .where(DocumentVersion.document_id == document.id)
@@ -238,8 +248,26 @@ def _process_document(db: Session, run: PipelineRun, run_doc: PipelineRunDocumen
     db.flush()
 
     _stage(db, run, run_doc, PipelineStage.EMBEDDING, document.original_filename, 75)
-    provider = get_embedding_provider(embedding_profile.provider.value)
+    provider_connection = _get_provider_connection(db, embedding_profile, run.organization_id)
+    api_key = (
+        decrypt_secret(provider_connection.encrypted_api_key)
+        if provider_connection and provider_connection.encrypted_api_key
+        else None
+    )
+    provider = get_embedding_provider(
+        embedding_profile.provider.value,
+        model_name=embedding_profile.model_name,
+        api_key=api_key,
+        base_url=provider_connection.base_url if provider_connection else None,
+        dimension=embedding_profile.embedding_dimension,
+    )
     vectors = asyncio.run(provider.embed_texts([chunk.text for chunk in chunk_models]))
+    for vector in vectors:
+        if len(vector) != embedding_profile.embedding_dimension:
+            raise ValueError(
+                f"Embedding provider returned {len(vector)} dimensions; "
+                f"profile expects {embedding_profile.embedding_dimension}."
+            )
     db.add_all(
         [
             EmbeddingVector(
@@ -263,6 +291,95 @@ def _process_document(db: Session, run: PipelineRun, run_doc: PipelineRunDocumen
     run_doc.status = PipelineStage.COMPLETED_WITH_WARNINGS if quality.issues else PipelineStage.COMPLETED
     run_doc.progress_percentage = 100
     run_doc.warnings = [*quality.issues, *cleaned.warnings]
+    db.commit()
+
+
+def _process_embedding_backfill_document(
+    db: Session,
+    run: PipelineRun,
+    run_doc: PipelineRunDocument,
+    document: Document,
+) -> None:
+    embedding_profile = _get_embedding_profile(db, run.embedding_profile_id, run.organization_id)
+    chunks = list(
+        db.scalars(
+            select(Chunk)
+            .where(
+                Chunk.organization_id == run.organization_id,
+                Chunk.document_id == document.id,
+            )
+            .order_by(Chunk.chunk_index)
+        )
+    )
+    if not chunks:
+        raise ValueError("No existing chunks found for embedding backfill. Run full ingestion first.")
+
+    _stage(db, run, run_doc, PipelineStage.EMBEDDING, document.original_filename, 75)
+    existing_chunk_ids = {
+        chunk_id
+        for chunk_id in db.scalars(
+            select(EmbeddingVector.chunk_id).where(
+                EmbeddingVector.document_id == document.id,
+                EmbeddingVector.embedding_profile_id == embedding_profile.id,
+            )
+        )
+    }
+    pending_chunks = [chunk for chunk in chunks if chunk.id not in existing_chunk_ids]
+    if pending_chunks:
+        provider_connection = _get_provider_connection(db, embedding_profile, run.organization_id)
+        api_key = (
+            decrypt_secret(provider_connection.encrypted_api_key)
+            if provider_connection and provider_connection.encrypted_api_key
+            else None
+        )
+        provider = get_embedding_provider(
+            embedding_profile.provider.value,
+            model_name=embedding_profile.model_name,
+            api_key=api_key,
+            base_url=provider_connection.base_url if provider_connection else None,
+            dimension=embedding_profile.embedding_dimension,
+        )
+        for start in range(0, len(pending_chunks), embedding_profile.batch_size):
+            batch = pending_chunks[start : start + embedding_profile.batch_size]
+            vectors = asyncio.run(provider.embed_texts([chunk.text for chunk in batch]))
+            for vector in vectors:
+                if len(vector) != embedding_profile.embedding_dimension:
+                    raise ValueError(
+                        f"Embedding provider returned {len(vector)} dimensions; "
+                        f"profile expects {embedding_profile.embedding_dimension}."
+                    )
+            db.add_all(
+                [
+                    EmbeddingVector(
+                        organization_id=run.organization_id,
+                        knowledge_base_id=document.knowledge_base_id,
+                        document_id=document.id,
+                        chunk_id=chunk.id,
+                        embedding_profile_id=embedding_profile.id,
+                        embedding_model=embedding_profile.model_name,
+                        embedding_dimension=embedding_profile.embedding_dimension,
+                        embedding=vector,
+                    )
+                    for chunk, vector in zip(batch, vectors, strict=True)
+                ]
+            )
+            db.flush()
+
+    _stage(db, run, run_doc, PipelineStage.INDEXING, document.original_filename, 92)
+    run_doc.status = PipelineStage.COMPLETED
+    run_doc.progress_percentage = 100
+    run.worker_logs = [
+        *run.worker_logs[-100:],
+        {
+            "stage": PipelineStage.INDEXING.value,
+            "item": document.original_filename,
+            "message": (
+                f"Backfilled {len(pending_chunks)} missing embedding(s); "
+                f"preserved {len(existing_chunk_ids)} existing embedding(s)."
+            ),
+            "at": datetime.now(UTC).isoformat(),
+        },
+    ]
     db.commit()
 
 
@@ -317,6 +434,8 @@ def _get_chunking_profile(db: Session, profile_id: UUID | None, org_id: UUID) ->
 
 
 def _get_embedding_profile(db: Session, profile_id: UUID | None, org_id: UUID) -> EmbeddingProfile:
+    ensure_default_profiles(db, org_id)
+    db.flush()
     query = select(EmbeddingProfile).where(EmbeddingProfile.organization_id.in_([org_id, None]))
     if profile_id:
         query = query.where(EmbeddingProfile.id == profile_id)
@@ -325,6 +444,31 @@ def _get_embedding_profile(db: Session, profile_id: UUID | None, org_id: UUID) -
     profile = db.scalar(query)
     if not profile:
         raise ValueError("Embedding profile not found.")
-    if profile.embedding_dimension != 384:
-        raise ValueError("This deployment requires a 384-dimensional active index for pgvector table safety.")
     return profile
+
+
+def _is_embedding_backfill(run: PipelineRun) -> bool:
+    config = run.retrieval_index_config or {}
+    return config.get("migration_mode") == "embedding_backfill" or config.get("embedding_backfill") is True
+
+
+def _get_provider_connection(
+    db: Session,
+    embedding_profile: EmbeddingProfile,
+    org_id: UUID,
+) -> ProviderConnection | None:
+    if embedding_profile.provider.value == "Local":
+        return None
+    if not embedding_profile.provider_connection_id:
+        raise ValueError("Embedding profile requires a provider connection.")
+    connection = db.get(ProviderConnection, embedding_profile.provider_connection_id)
+    if (
+        not connection
+        or connection.organization_id != org_id
+        or connection.deleted_at is not None
+        or not connection.is_enabled
+    ):
+        raise ValueError("Embedding provider connection is not available.")
+    if connection.provider != embedding_profile.provider:
+        raise ValueError("Embedding profile provider does not match its provider connection.")
+    return connection

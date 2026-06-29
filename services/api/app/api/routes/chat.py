@@ -21,7 +21,8 @@ from app.schemas.api import (
     ChatSessionPatchIn,
     ChatTurnOut,
 )
-from app.services.chat import generate_local_grounded_answer
+from app.services.chat import generate_grounded_answer
+from app.services.model_runtime import resolve_chat_model
 from app.services.retrieval import retrieve
 
 router = APIRouter(prefix="/chat-sessions", tags=["chat"])
@@ -51,6 +52,8 @@ def create_chat_session(
     ctx: AuthContext = Depends(capability("chat")),
     db: Session = Depends(get_db),
 ) -> ChatSession:
+    if payload.model_profile_id:
+        resolve_chat_model(db, ctx.organization_id, payload.model_profile_id)
     session = ChatSession(
         organization_id=ctx.organization_id,
         user_id=ctx.user.id,
@@ -100,6 +103,7 @@ def patch_chat_session(
     if payload.retrieval_config is not None:
         session.retrieval_config = payload.retrieval_config
     if payload.model_profile_id is not None:
+        resolve_chat_model(db, ctx.organization_id, payload.model_profile_id)
         session.model_profile_id = payload.model_profile_id
     db.commit()
     db.refresh(session)
@@ -147,7 +151,14 @@ def create_chat_message(
         debug=payload.debug,
         chat_session_id=session.id,
     )
-    answer = generate_local_grounded_answer(payload.content, candidates)
+    chat_model = resolve_chat_model(db, ctx.organization_id, session.model_profile_id)
+    try:
+        answer = generate_grounded_answer(payload.content, candidates, chat_model)
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            detail=f"Selected chat model failed: {str(exc)[:300]}",
+        ) from exc
     assistant_message = ChatMessage(
         organization_id=ctx.organization_id,
         chat_session_id=session.id,
@@ -156,7 +167,9 @@ def create_chat_message(
         citations=answer.citations,
         metadata_json={
             "retrieval_event_id": str(event.id),
-            "provider": "Local grounded responder",
+            "provider": chat_model.provider,
+            "model": chat_model.model_name,
+            "model_profile_id": chat_model.profile_id,
             "suggested_questions": answer.suggested_questions,
         },
     )

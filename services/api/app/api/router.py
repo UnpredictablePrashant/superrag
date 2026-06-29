@@ -14,6 +14,7 @@ from app.api.routes import (
     profiles,
     providers,
     retrieval,
+    telegram,
     uploads,
 )
 
@@ -28,5 +29,6 @@ api_router.include_router(providers.router)
 api_router.include_router(profiles.router)
 api_router.include_router(chat.router)
 api_router.include_router(retrieval.router)
+api_router.include_router(telegram.router)
 api_router.include_router(notifications.router)
 api_router.include_router(audit_logs.router)

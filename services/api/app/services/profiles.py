@@ -9,6 +9,8 @@ from app.models.entities import (
     ChunkingProfile,
     CleanupProfile,
     EmbeddingProfile,
+    ModelProfile,
+    ProfileKind,
     ProviderKind,
 )
 
@@ -102,5 +104,27 @@ def ensure_default_profiles(db: Session, organization_id: UUID | None = None) ->
                 batch_size=64,
                 normalization="l2",
                 is_active=True,
+            )
+        )
+
+    existing_chat = db.scalar(
+        select(ModelProfile).where(
+            ModelProfile.organization_id == organization_id,
+            ModelProfile.kind == ProfileKind.CHAT,
+        )
+    )
+    if not existing_chat:
+        db.add(
+            ModelProfile(
+                organization_id=organization_id,
+                kind=ProfileKind.CHAT,
+                name="Local grounded responder",
+                model_name="deterministic-local-384",
+                supports_streaming=False,
+                supports_embeddings=False,
+                supports_structured_output=False,
+                context_window=8_191,
+                max_output_tokens=0,
+                is_default=True,
             )
         )

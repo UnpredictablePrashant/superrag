@@ -7,7 +7,7 @@ import { shortDate } from "@/lib/format";
 import type { DocumentRecord, PipelineRun } from "@rag-console/shared-types";
 import { Panel } from "@rag-console/ui";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Database, FileText, Layers3, MessageSquare, RefreshCw } from "lucide-react";
+import { Activity, BookOpenText, Bot, Database, FileText, Layers3, MessageSquare, Plug } from "lucide-react";
 import Link from "next/link";
 
 export default function DashboardPage() {
@@ -63,6 +63,28 @@ export default function DashboardPage() {
           </div>
         </Panel>
       </div>
+      <Panel className="p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <BookOpenText className="h-5 w-5 text-sky-700" aria-hidden />
+          <h3 className="font-semibold text-zinc-950">Docs</h3>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Link href="/docs#telegram" className="rounded-md border border-zinc-200 p-4 hover:bg-zinc-50">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-sky-700" aria-hidden />
+              <p className="font-medium text-zinc-950">Telegram setup</p>
+            </div>
+            <p className="mt-2 text-sm text-zinc-500">Connect a Telegram bot, register the webhook, and allow users.</p>
+          </Link>
+          <Link href="/docs#mcp" className="rounded-md border border-zinc-200 p-4 hover:bg-zinc-50">
+            <div className="flex items-center gap-2">
+              <Plug className="h-4 w-4 text-emerald-700" aria-hidden />
+              <p className="font-medium text-zinc-950">MCP connectors</p>
+            </div>
+            <p className="mt-2 text-sm text-zinc-500">Use Cursor-style MCP JSON with stdio or connect Streamable HTTP servers.</p>
+          </Link>
+        </div>
+      </Panel>
     </div>
   );
 }

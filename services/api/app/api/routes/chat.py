@@ -104,9 +104,12 @@ def patch_chat_session(
         session.knowledge_base_ids = [str(value) for value in payload.knowledge_base_ids]
     if payload.retrieval_config is not None:
         session.retrieval_config = payload.retrieval_config
-    if payload.model_profile_id is not None:
-        resolve_chat_model(db, ctx.organization_id, payload.model_profile_id)
-        session.model_profile_id = payload.model_profile_id
+    if "model_profile_id" in payload.model_fields_set:
+        if payload.model_profile_id is None:
+            session.model_profile_id = None
+        else:
+            resolve_chat_model(db, ctx.organization_id, payload.model_profile_id)
+            session.model_profile_id = payload.model_profile_id
     db.commit()
     db.refresh(session)
     return session

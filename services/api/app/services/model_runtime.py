@@ -22,6 +22,8 @@ def resolve_chat_model(
     profile = None
     if profile_id:
         profile = _get_chat_profile(db, organization_id, profile_id)
+        if _is_legacy_local_chat_profile(profile):
+            profile = None
     if not profile:
         profile = db.scalar(
             select(ModelProfile)
@@ -29,7 +31,25 @@ def resolve_chat_model(
                 ModelProfile.organization_id == organization_id,
                 ModelProfile.kind == ProfileKind.CHAT,
                 ModelProfile.deleted_at.is_(None),
+                ~(
+                    (ModelProfile.provider_connection_id.is_(None))
+                    & (ModelProfile.model_name == "deterministic-local-384")
+                ),
                 ModelProfile.is_default.is_(True),
+            )
+            .order_by(ModelProfile.created_at)
+        )
+    if not profile:
+        profile = db.scalar(
+            select(ModelProfile)
+            .where(
+                ModelProfile.organization_id == organization_id,
+                ModelProfile.kind == ProfileKind.CHAT,
+                ModelProfile.deleted_at.is_(None),
+                ~(
+                    (ModelProfile.provider_connection_id.is_(None))
+                    & (ModelProfile.model_name == "deterministic-local-384")
+                ),
             )
             .order_by(ModelProfile.created_at)
         )
@@ -90,3 +110,7 @@ def _get_chat_profile(db: Session, organization_id: UUID, profile_id: UUID) -> M
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat model profile not found.")
     return profile
+
+
+def _is_legacy_local_chat_profile(profile: ModelProfile) -> bool:
+    return profile.provider_connection_id is None and profile.model_name == "deterministic-local-384"

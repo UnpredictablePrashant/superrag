@@ -21,6 +21,8 @@ class ModelCapability:
 
 
 DEFAULT_CAPABILITIES = [
+    ModelCapability("OpenAI", "gpt-5.1", True, True, False, True, 1_000_000, 32_768),
+    ModelCapability("OpenAI", "gpt-5.1-mini", True, True, False, True, 1_000_000, 32_768),
     ModelCapability("OpenAI", "gpt-4.1", True, True, False, True, 1_000_000, 16_384),
     ModelCapability("OpenAI", "gpt-4.1-mini", True, True, False, True, 1_000_000, 16_384),
     ModelCapability("OpenAI", "gpt-4o", True, True, False, True, 128_000, 16_384),
@@ -44,7 +46,7 @@ DEFAULT_CAPABILITIES = [
     ),
     ModelCapability("xAI Grok", "grok-3", True, True, False, True, 131_072, 16_384),
     ModelCapability("xAI Grok", "grok-3-mini", True, True, False, True, 131_072, 16_384),
-    ModelCapability("Local", "deterministic-local-384", True, False, True, False, 8_191, 0, 384),
+    ModelCapability("Local", "deterministic-local-384", False, False, True, False, 8_191, 0, 384),
 ]
 
 

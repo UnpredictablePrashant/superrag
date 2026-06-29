@@ -1,4 +1,5 @@
 from app.services.connectors import (
+    _mcp_stdio_server_config,
     is_mcp_tool_read_only,
     normalize_web_document,
     select_mcp_tool_arguments,
@@ -39,3 +40,39 @@ def test_mcp_live_tool_filtering_rejects_write_like_tools() -> None:
     tool = {"name": "delete_document", "description": "Delete a document"}
 
     assert not is_mcp_tool_read_only(tool)
+
+
+def test_mcp_stdio_config_accepts_cursor_style_mcp_servers() -> None:
+    class Connection:
+        config = {
+            "mcpServers": {
+                "awslabs.aws-api-mcp-server": {
+                    "command": "uvx",
+                    "args": ["awslabs.aws-api-mcp-server@latest"],
+                    "env": {"AWS_REGION": "us-east-1"},
+                    "disabled": False,
+                    "autoApprove": [],
+                }
+            }
+        }
+
+    config = _mcp_stdio_server_config(Connection())
+
+    assert config.name == "awslabs.aws-api-mcp-server"
+    assert config.command == ["uvx", "awslabs.aws-api-mcp-server@latest"]
+    assert config.env == {"AWS_REGION": "us-east-1"}
+
+
+def test_mcp_stdio_config_skips_disabled_cursor_servers() -> None:
+    class Connection:
+        config = {
+            "mcpServers": {
+                "disabled-server": {"command": "uvx", "args": ["disabled"], "disabled": True},
+                "enabled-server": {"command": "node", "args": ["server.js"], "disabled": False},
+            }
+        }
+
+    config = _mcp_stdio_server_config(Connection())
+
+    assert config.name == "enabled-server"
+    assert config.command == ["node", "server.js"]

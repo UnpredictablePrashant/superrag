@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -44,6 +45,13 @@ class ConnectorDocument:
     content_type: str
     data: bytes
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class MCPStdioServerConfig:
+    name: str | None
+    command: list[str]
+    env: dict[str, str]
 
 
 class ConnectorAdapter:
@@ -597,7 +605,10 @@ def _mcp_request(
     *,
     allow_failure: bool = False,
 ) -> dict[str, Any]:
-    transport = str(connection.config.get("transport") or "streamable_http")
+    transport = str(
+        connection.config.get("transport")
+        or ("stdio" if isinstance(connection.config.get("mcpServers"), dict) else "streamable_http")
+    )
     try:
         if transport == "stdio":
             return _mcp_stdio_request(connection, method, params)
@@ -666,10 +677,8 @@ def _mcp_http_jsonrpc(
 
 
 def _mcp_stdio_request(connection: ConnectorConnection, method: str, params: dict[str, Any]) -> dict[str, Any]:
-    command = connection.config.get("command")
-    if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
-        raise ValueError("MCP stdio transport requires config.command as a string array.")
-    _validate_stdio_command(command)
+    server_config = _mcp_stdio_server_config(connection)
+    _validate_stdio_command(server_config.command)
     payloads = [
         {
             "jsonrpc": "2.0",
@@ -684,11 +693,14 @@ def _mcp_stdio_request(connection: ConnectorConnection, method: str, params: dic
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
         {"jsonrpc": "2.0", "id": 2, "method": method, "params": params},
     ]
+    env = os.environ.copy()
+    env.update(server_config.env)
     process = subprocess.Popen(
-        command,
+        server_config.command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
         text=True,
         shell=False,
     )
@@ -708,6 +720,58 @@ def _mcp_stdio_request(connection: ConnectorConnection, method: str, params: dic
                 raise ValueError(str(payload["error"]))
             return dict(payload.get("result") or {})
     raise ValueError((stderr or "MCP stdio server returned no response.").strip()[:500])
+
+
+def _mcp_stdio_server_config(connection: ConnectorConnection) -> MCPStdioServerConfig:
+    config = connection.config or {}
+    root_env = _mcp_env(config.get("env") or {})
+    if isinstance(config.get("command"), list):
+        command = config["command"]
+        if not command or not all(isinstance(part, str) and part.strip() for part in command):
+            raise ValueError("MCP stdio transport requires config.command as a string array.")
+        return MCPStdioServerConfig(name=None, command=command, env=root_env)
+    if isinstance(config.get("command"), str):
+        return _mcp_stdio_from_server_object(config, name=str(config.get("name") or "") or None, root_env={})
+
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict) or not servers:
+        raise ValueError("MCP stdio transport requires config.mcpServers or config.command.")
+    selected_name = str(config.get("mcp_server_name") or config.get("server_name") or "").strip()
+    if selected_name:
+        selected = servers.get(selected_name)
+        if not isinstance(selected, dict):
+            raise ValueError(f"MCP server {selected_name} was not found in config.mcpServers.")
+        return _mcp_stdio_from_server_object(selected, selected_name, root_env)
+    for name, value in servers.items():
+        if isinstance(value, dict) and value.get("disabled") is not True:
+            return _mcp_stdio_from_server_object(value, str(name), root_env)
+    raise ValueError("Cursor-style MCP config contains no enabled mcpServers entry.")
+
+
+def _mcp_stdio_from_server_object(
+    server: dict[str, Any],
+    name: str | None,
+    root_env: dict[str, str],
+) -> MCPStdioServerConfig:
+    if server.get("disabled") is True:
+        raise ValueError(f"MCP server {name or 'stdio'} is disabled.")
+    command = server.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("Cursor-style MCP server config requires a command string.")
+    args = server.get("args") or []
+    if not isinstance(args, list) or not all(isinstance(part, str) for part in args):
+        raise ValueError("Cursor-style MCP server args must be a string array.")
+    return MCPStdioServerConfig(
+        name=name,
+        command=[command, *args],
+        env={**root_env, **_mcp_env(server.get("env") or {})},
+    )
+
+
+def _mcp_env(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError("MCP stdio env must be an object.")
+    return {str(key): str(env_value) for key, env_value in value.items()}
 
 
 def _validate_stdio_command(command: list[str]) -> None:

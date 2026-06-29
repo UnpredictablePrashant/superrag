@@ -33,6 +33,10 @@ def list_profiles(ctx: AuthContext = Depends(require_organization), db: Session 
                 ModelProfile.organization_id == ctx.organization_id,
                 ModelProfile.kind == ProfileKind.CHAT,
                 ModelProfile.deleted_at.is_(None),
+                ~(
+                    (ModelProfile.provider_connection_id.is_(None))
+                    & (ModelProfile.model_name == "deterministic-local-384")
+                ),
             )
             .order_by(ModelProfile.is_default.desc(), ModelProfile.created_at)
         )

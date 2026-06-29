@@ -18,7 +18,7 @@ import {
   TelegramAllowedUser,
 } from "@/lib/api";
 import { shortDate } from "@/lib/format";
-import { Badge, Button, Input, Label, Panel, Select } from "@rag-console/ui";
+import { Badge, Button, Input, Label, Panel, Select, Textarea } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Bot, Globe, History, KeyRound, Play, Plug, RotateCw, Save, Send, ShieldCheck, SlidersHorizontal, Trash2, UserPlus } from "lucide-react";
 import * as React from "react";
@@ -36,6 +36,22 @@ const tabs = [
   "Security",
   "Audit Logs",
 ];
+
+const DEFAULT_MCP_CONFIG = `{
+  "mcpServers": {
+    "awslabs.aws-api-mcp-server": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aws-api-mcp-server@latest"
+      ],
+      "env": {
+        "AWS_REGION": "us-east-1"
+      },
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}`;
 
 export default function SettingsPage() {
   const [tab, setTab] = React.useState("AI Providers");
@@ -237,7 +253,8 @@ function ConnectorSettings() {
   const [seedUrls, setSeedUrls] = React.useState("");
   const [allowlist, setAllowlist] = React.useState("");
   const [companyName, setCompanyName] = React.useState("");
-  const [transport, setTransport] = React.useState("streamable_http");
+  const [transport, setTransport] = React.useState("stdio");
+  const [mcpConfig, setMcpConfig] = React.useState(DEFAULT_MCP_CONFIG);
   const [enabledToolNames, setEnabledToolNames] = React.useState("");
   const [syncKbId, setSyncKbId] = React.useState("");
   const [activeConnectionId, setActiveConnectionId] = React.useState("");
@@ -256,6 +273,7 @@ function ConnectorSettings() {
 
   const create = useMutation({
     mutationFn: () => {
+      const enabledTools = splitList(enabledToolNames);
       const config =
         kind === "web"
           ? {
@@ -266,17 +284,18 @@ function ConnectorSettings() {
             }
           : {
               transport,
-              enabled_tool_names: splitList(enabledToolNames),
-              tool_tags: Object.fromEntries(splitList(enabledToolNames).map((tool) => [tool, ["web_search", "knowledge_lookup"]])),
+              ...(transport === "stdio" ? parseMcpConfig(mcpConfig) : {}),
+              enabled_tool_names: enabledTools,
+              tool_tags: Object.fromEntries(enabledTools.map((tool) => [tool, ["web_search", "knowledge_lookup"]])),
             };
       return api("/connectors", {
         method: "POST",
         body: JSON.stringify({
           kind,
           scope,
-          name: name || (kind === "web" ? "Web sync" : "MCP tools"),
+          name: name || (kind === "web" ? "Web sync" : mcpServerName(config) ?? "MCP tools"),
           secret: secret || undefined,
-          base_url: baseUrl || undefined,
+          base_url: kind === "mcp" && transport === "stdio" ? undefined : baseUrl || undefined,
           is_enabled: enabled,
           config,
         }),
@@ -353,10 +372,12 @@ function ConnectorSettings() {
             <Label>Name</Label>
             <Input value={name} onChange={(event) => setName(event.target.value)} />
           </div>
-          <div className="space-y-2">
-            <Label>{kind === "mcp" ? "MCP endpoint" : "Base URL"}</Label>
-            <Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
-          </div>
+          {kind === "mcp" && transport === "stdio" ? null : (
+            <div className="space-y-2">
+              <Label>{kind === "mcp" ? "MCP endpoint" : "Base URL"}</Label>
+              <Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+            </div>
+          )}
           <div className="space-y-2">
             <Label>Secret</Label>
             <Input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} />
@@ -400,6 +421,17 @@ function ConnectorSettings() {
                 <Label>Enabled tool names</Label>
                 <Input value={enabledToolNames} onChange={(event) => setEnabledToolNames(event.target.value)} placeholder="search,lookup" />
               </div>
+              {transport === "stdio" ? (
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Cursor MCP JSON</Label>
+                  <Textarea
+                    className="min-h-64 font-mono text-xs"
+                    value={mcpConfig}
+                    onChange={(event) => setMcpConfig(event.target.value)}
+                    spellCheck={false}
+                  />
+                </div>
+              ) : null}
             </>
           )}
           <label className="flex items-center gap-2 text-sm text-zinc-700">
@@ -480,6 +512,29 @@ function splitList(value: string) {
     .split(/[\n,]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseMcpConfig(value: string): Record<string, unknown> {
+  const trimmed = value.trim();
+  if (!trimmed) return {};
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Cursor MCP JSON must be an object.");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function mcpServerName(config: Record<string, unknown>) {
+  const selectedName = config.mcp_server_name ?? config.server_name;
+  if (typeof selectedName === "string" && selectedName.trim()) return selectedName.trim();
+  const servers = config.mcpServers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return null;
+  for (const [name, value] of Object.entries(servers)) {
+    if (value && typeof value === "object" && !Array.isArray(value) && (value as { disabled?: unknown }).disabled !== true) {
+      return name;
+    }
+  }
+  return null;
 }
 
 function ProfileSettings({ tab }: { tab: string }) {

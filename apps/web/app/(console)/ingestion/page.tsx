@@ -3,12 +3,12 @@
 import { EmptyState } from "@/components/empty-state";
 import { ErrorBox } from "@/components/error-box";
 import { StatusBadge } from "@/components/status-badge";
-import { api, Category, listDocuments, listKnowledgeBases } from "@/lib/api";
+import { api, Category, ConnectorConnection, listConnectors, listDocuments, listKnowledgeBases } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import type { DocumentRecord, KnowledgeBase, PipelineRun } from "@rag-console/shared-types";
 import { Badge, Button, Input, Label, Panel, Select } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Check, Cloud, FileText, FolderPlus, HardDrive, Mail, Play, UploadCloud } from "lucide-react";
+import { ArrowRight, Check, Cloud, FileText, FolderPlus, Globe, HardDrive, Mail, Play, Plug, UploadCloud } from "lucide-react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 
@@ -28,6 +28,7 @@ export default function IngestionPage() {
   const [files, setFiles] = React.useState<File[]>([]);
   const [uploadedDocs, setUploadedDocs] = React.useState<DocumentRecord[]>([]);
   const [selectedExistingDocs, setSelectedExistingDocs] = React.useState<string[]>([]);
+  const [selectedConnectorIds, setSelectedConnectorIds] = React.useState<string[]>([]);
   const [knowledgeBaseId, setKnowledgeBaseId] = React.useState("");
   const [categoryId, setCategoryId] = React.useState("");
   const [newCategory, setNewCategory] = React.useState("");
@@ -39,8 +40,10 @@ export default function IngestionPage() {
   const [embeddingProfileId, setEmbeddingProfileId] = React.useState("");
   const [uploading, setUploading] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [notice, setNotice] = React.useState("");
 
   const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
+  const connectors = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
   const docs = useQuery({ queryKey: ["documents", knowledgeBaseId], queryFn: () => listDocuments(knowledgeBaseId || undefined) });
   const categories = useQuery({
     queryKey: ["categories", knowledgeBaseId],
@@ -143,27 +146,48 @@ export default function IngestionPage() {
 
   async function startPipeline() {
     setError("");
+    setNotice("");
     try {
       const documentIds = [...uploadedDocs.map((doc) => doc.id), ...selectedExistingDocs];
-      const run = await api<PipelineRun>("/pipeline-runs", {
-        method: "POST",
-        body: JSON.stringify({
-          knowledge_base_id: knowledgeBaseId,
-          document_ids: documentIds,
-          cleanup_profile_id: cleanupProfileId || undefined,
-          chunking_profile_id: chunkingProfileId || undefined,
-          embedding_profile_id: embeddingProfileId || undefined,
-          retrieval_index_config: { max_chunks: 8, rrf_constant: 60 },
-        }),
-      });
-      router.push(`/pipeline/${run.id}`);
+      let run: PipelineRun | null = null;
+      if (documentIds.length) {
+        run = await api<PipelineRun>("/pipeline-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            knowledge_base_id: knowledgeBaseId,
+            document_ids: documentIds,
+            cleanup_profile_id: cleanupProfileId || undefined,
+            chunking_profile_id: chunkingProfileId || undefined,
+            embedding_profile_id: embeddingProfileId || undefined,
+            retrieval_index_config: { max_chunks: 8, rrf_constant: 60 },
+          }),
+        });
+      }
+      for (const connectorId of selectedConnectorIds) {
+        await api(`/connectors/${connectorId}/sync`, {
+          method: "POST",
+          body: JSON.stringify({
+            knowledge_base_id: knowledgeBaseId,
+            cleanup_profile_id: cleanupProfileId || undefined,
+            chunking_profile_id: chunkingProfileId || undefined,
+            embedding_profile_id: embeddingProfileId || undefined,
+            share_with_organization: false,
+          }),
+        });
+      }
+      if (run) {
+        router.push(`/pipeline/${run.id}`);
+      } else {
+        setNotice("Connector sync queued.");
+        queryClient.invalidateQueries({ queryKey: ["documents"] });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start pipeline.");
     }
   }
 
   const existingDocs = docs.data ?? [];
-  const allSelected = uploadedDocs.length + selectedExistingDocs.length;
+  const allSelected = uploadedDocs.length + selectedExistingDocs.length + selectedConnectorIds.length;
 
   return (
     <div className="space-y-6">
@@ -172,6 +196,7 @@ export default function IngestionPage() {
         <p className="mt-1 text-sm text-zinc-500">Upload, validate, clean, chunk, embed, and index documents.</p>
       </div>
       <ErrorBox message={error || (createCategory.error instanceof Error ? createCategory.error.message : "")} />
+      {notice ? <div className="rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div> : null}
       <div className="grid gap-4 xl:grid-cols-[280px_1fr]">
         <Panel className="p-4">
           <ol className="space-y-2">
@@ -200,6 +225,9 @@ export default function IngestionPage() {
               existingDocs={existingDocs}
               selectedExistingDocs={selectedExistingDocs}
               setSelectedExistingDocs={setSelectedExistingDocs}
+              connectors={connectors.data ?? []}
+              selectedConnectorIds={selectedConnectorIds}
+              setSelectedConnectorIds={setSelectedConnectorIds}
             />
           ) : null}
           {step === 1 ? (
@@ -251,6 +279,7 @@ export default function IngestionPage() {
           {step === 5 ? (
             <ReviewStep
               documents={[...uploadedDocs, ...existingDocs.filter((doc) => selectedExistingDocs.includes(doc.id))]}
+              connectors={(connectors.data ?? []).filter((connection) => selectedConnectorIds.includes(connection.id))}
               cleanup={profiles.data?.cleanup_profiles.find((profile) => profile.id === cleanupProfileId)?.name}
               chunking={profiles.data?.chunking_profiles.find((profile) => profile.id === chunkingProfileId)?.name}
               embedding={profiles.data?.embedding_profiles.find((profile) => profile.id === embeddingProfileId)?.name}
@@ -292,17 +321,26 @@ function SelectDocuments({
   existingDocs,
   selectedExistingDocs,
   setSelectedExistingDocs,
+  connectors,
+  selectedConnectorIds,
+  setSelectedConnectorIds,
 }: {
   files: File[];
   setFiles: (files: File[]) => void;
   existingDocs: DocumentRecord[];
   selectedExistingDocs: string[];
   setSelectedExistingDocs: (ids: string[]) => void;
+  connectors: ConnectorConnection[];
+  selectedConnectorIds: string[];
+  setSelectedConnectorIds: (ids: string[]) => void;
 }) {
   const [source, setSource] = React.useState("files");
+  const connectorSources = connectors.filter((connection) => connection.kind === source);
   const sourceOptions = [
     { id: "files", label: "Local files", icon: UploadCloud, enabled: true },
     { id: "existing", label: "Uploaded", icon: FileText, enabled: true },
+    { id: "web", label: "Web", icon: Globe, enabled: true },
+    { id: "mcp", label: "MCP", icon: Plug, enabled: true },
     { id: "google-drive", label: "Google Drive", icon: Cloud, enabled: false },
     { id: "gmail", label: "Gmail", icon: Mail, enabled: false },
     { id: "one-drive", label: "OneDrive", icon: HardDrive, enabled: false },
@@ -310,6 +348,11 @@ function SelectDocuments({
   function toggle(id: string) {
     setSelectedExistingDocs(
       selectedExistingDocs.includes(id) ? selectedExistingDocs.filter((value) => value !== id) : [...selectedExistingDocs, id],
+    );
+  }
+  function toggleConnector(id: string) {
+    setSelectedConnectorIds(
+      selectedConnectorIds.includes(id) ? selectedConnectorIds.filter((value) => value !== id) : [...selectedConnectorIds, id],
     );
   }
   return (
@@ -398,6 +441,26 @@ function SelectDocuments({
         ) : (
           <EmptyState icon={FileText} title="No uploaded documents" body="Upload files in this wizard to create the first document set." />
         )}
+        </div>
+      ) : null}
+      {source === "web" || source === "mcp" ? (
+        <div>
+          {connectorSources.length ? (
+            <div className="grid gap-2">
+              {connectorSources.map((connection) => (
+                <label key={connection.id} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2">
+                  <span className="flex items-center gap-2 text-sm text-zinc-800">
+                    <input type="checkbox" checked={selectedConnectorIds.includes(connection.id)} onChange={() => toggleConnector(connection.id)} />
+                    {source === "web" ? <Globe className="h-4 w-4 text-zinc-400" aria-hidden /> : <Plug className="h-4 w-4 text-zinc-400" aria-hidden />}
+                    {connection.name}
+                  </span>
+                  <StatusBadge status={connection.status} />
+                </label>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={source === "web" ? Globe : Plug} title="No connector configured" body="Add a connector in Settings before selecting this source." />
+          )}
         </div>
       ) : null}
     </div>
@@ -518,11 +581,13 @@ function ProfileStep({
 
 function ReviewStep({
   documents,
+  connectors,
   cleanup,
   chunking,
   embedding,
 }: {
   documents: DocumentRecord[];
+  connectors: ConnectorConnection[];
   cleanup?: string;
   chunking?: string;
   embedding?: string;
@@ -552,6 +617,12 @@ function ReviewStep({
           <div key={doc.id} className="flex items-center justify-between border-b border-zinc-100 px-4 py-3 last:border-0">
             <span className="text-sm font-medium text-zinc-900">{doc.name}</span>
             <StatusBadge status={doc.processing_status} />
+          </div>
+        ))}
+        {connectors.map((connection) => (
+          <div key={connection.id} className="flex items-center justify-between border-b border-zinc-100 px-4 py-3 last:border-0">
+            <span className="text-sm font-medium text-zinc-900">{connection.name}</span>
+            <Badge>{connection.kind}</Badge>
           </div>
         ))}
       </div>

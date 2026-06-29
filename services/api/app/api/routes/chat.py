@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import AuthContext, capability
+from app.core.permissions import require_capability
 from app.db.session import SessionLocal, get_db
 from app.models.entities import ChatMessage, ChatSession
 from app.schemas.api import (
@@ -22,8 +23,9 @@ from app.schemas.api import (
     ChatTurnOut,
 )
 from app.services.chat import generate_grounded_answer
+from app.services.connectors import live_connector_candidates
 from app.services.model_runtime import resolve_chat_model
-from app.services.retrieval import retrieve
+from app.services.retrieval import Candidate, retrieve
 
 router = APIRouter(prefix="/chat-sessions", tags=["chat"])
 
@@ -132,6 +134,12 @@ def create_chat_message(
     session = _get_session(db, ctx, chat_session_id)
     kb_ids = [str(value) for value in payload.knowledge_base_ids] if payload.knowledge_base_ids else session.knowledge_base_ids
     filters = {**session.retrieval_config, **payload.filters}
+    if payload.use_web_search:
+        filters["use_web_search"] = True
+    if payload.use_mcp_tools:
+        filters["use_mcp_tools"] = True
+    if payload.connector_connection_ids:
+        filters["connector_connection_ids"] = [str(value) for value in payload.connector_connection_ids]
     user_message = ChatMessage(
         organization_id=ctx.organization_id,
         chat_session_id=session.id,
@@ -151,6 +159,30 @@ def create_chat_message(
         debug=payload.debug,
         chat_session_id=session.id,
     )
+    if filters.get("use_web_search") or filters.get("use_mcp_tools"):
+        require_capability(ctx.role or "", "use_live_tools")
+        live_candidates = live_connector_candidates(
+            db,
+            organization_id=ctx.organization_id,
+            user_id=ctx.user.id,
+            query=payload.content,
+            use_web_search=bool(filters.get("use_web_search")),
+            use_mcp_tools=bool(filters.get("use_mcp_tools")),
+            connector_connection_ids=[str(value) for value in filters.get("connector_connection_ids", [])],
+            chat_session_id=session.id,
+        )
+        candidates = _merge_live_candidates(candidates, live_candidates)
+        if live_candidates:
+            event.applied_filters = {
+                **event.applied_filters,
+                "use_web_search": bool(filters.get("use_web_search")),
+                "use_mcp_tools": bool(filters.get("use_mcp_tools")),
+                "connector_connection_ids": [str(value) for value in filters.get("connector_connection_ids", [])],
+            }
+            event.final_context_chunks = [
+                *event.final_context_chunks,
+                *[_candidate_debug(candidate) for candidate in live_candidates],
+            ]
     chat_model = resolve_chat_model(db, ctx.organization_id, session.model_profile_id)
     try:
         answer = generate_grounded_answer(payload.content, candidates, chat_model)
@@ -185,6 +217,24 @@ def create_chat_message(
         retrieval_event_id=event.id,
         suggested_questions=answer.suggested_questions,
     )
+
+
+def _merge_live_candidates(indexed: list[Candidate], live: list[Candidate]) -> list[Candidate]:
+    if not live:
+        return indexed
+    return sorted([*indexed, *live], key=lambda candidate: candidate.score, reverse=True)
+
+
+def _candidate_debug(candidate: Candidate) -> dict:
+    return {
+        "chunk_id": candidate.chunk_id,
+        "document_id": candidate.document_id,
+        "document_name": candidate.document_name,
+        "score": candidate.score,
+        "source": candidate.source,
+        "preview": candidate.text[:280],
+        "metadata": candidate.metadata,
+    }
 
 
 @router.get("/{chat_session_id}/stream")

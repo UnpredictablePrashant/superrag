@@ -98,6 +98,8 @@ export interface Citation {
   chunk_id: string;
   document_id: string;
   document_name: string;
+  source_type?: string | null;
+  source_url?: string | null;
   page_start?: number | null;
   page_end?: number | null;
   heading_hierarchy: string[];

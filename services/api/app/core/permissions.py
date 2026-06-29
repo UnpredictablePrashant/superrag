@@ -30,6 +30,9 @@ CAPABILITIES: dict[str, set[Role]] = {
     "edit_cleanup_policies": {Role.OWNER, Role.ADMIN, Role.EDITOR},
     "run_ingestion": {Role.OWNER, Role.ADMIN, Role.EDITOR},
     "chat": {Role.OWNER, Role.ADMIN, Role.EDITOR, Role.MEMBER, Role.VIEWER},
+    "manage_org_connectors": {Role.OWNER, Role.ADMIN},
+    "manage_own_connectors": {Role.OWNER, Role.ADMIN, Role.EDITOR, Role.MEMBER},
+    "use_live_tools": {Role.OWNER, Role.ADMIN, Role.EDITOR, Role.MEMBER, Role.VIEWER},
     "view_audit_logs": {Role.OWNER, Role.ADMIN},
 }
 

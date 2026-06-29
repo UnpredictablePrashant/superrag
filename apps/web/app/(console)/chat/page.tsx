@@ -1,11 +1,11 @@
 "use client";
 
 import { ErrorBox } from "@/components/error-box";
-import { API_URL, api, getChatSession, listChatSessions, listKnowledgeBases, listProfiles } from "@/lib/api";
+import { API_URL, api, getChatSession, listChatSessions, listConnectors, listKnowledgeBases, listProfiles } from "@/lib/api";
 import type { ChatMessage, Citation } from "@rag-console/shared-types";
 import { Badge, Button, Panel, Select, Textarea } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, Bug, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
+import { BookOpen, Bug, Globe, MessageSquarePlus, Plug, Send, Square, Trash2 } from "lucide-react";
 import * as React from "react";
 
 export default function ChatPage() {
@@ -14,6 +14,9 @@ export default function ChatPage() {
   const [prompt, setPrompt] = React.useState("");
   const [selectedKbIds, setSelectedKbIds] = React.useState<string[]>([]);
   const [selectedModelProfileId, setSelectedModelProfileId] = React.useState("");
+  const [useWebSearch, setUseWebSearch] = React.useState(false);
+  const [useMcpTools, setUseMcpTools] = React.useState(false);
+  const [selectedConnectorIds, setSelectedConnectorIds] = React.useState<string[]>([]);
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = React.useState("");
   const [selectedCitation, setSelectedCitation] = React.useState<Citation | null>(null);
@@ -24,6 +27,7 @@ export default function ChatPage() {
   const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
   const sessions = useQuery({ queryKey: ["chat-sessions"], queryFn: listChatSessions });
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: listProfiles });
+  const connectors = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
   const activeSession = useQuery({
     queryKey: ["chat-session", sessionId],
     enabled: Boolean(sessionId),
@@ -94,7 +98,14 @@ export default function ChatPage() {
         suggested_questions: string[];
       }>(`/chat-sessions/${id}/messages`, {
         method: "POST",
-        body: JSON.stringify({ content: prompt, knowledge_base_ids: selectedKbIds, debug }),
+        body: JSON.stringify({
+          content: prompt,
+          knowledge_base_ids: selectedKbIds,
+          use_web_search: useWebSearch,
+          use_mcp_tools: useMcpTools,
+          connector_connection_ids: selectedConnectorIds,
+          debug,
+        }),
       });
       setMessages((current) => [...current, turn.user_message]);
       setPrompt("");
@@ -135,6 +146,10 @@ export default function ChatPage() {
 
   const selectedKbName = kbs.data?.filter((kb) => selectedKbIds.includes(kb.id)).map((kb) => kb.name).join(", ");
   const selectedModel = profiles.data?.chat_profiles.find((profile) => profile.id === selectedModelProfileId);
+  const liveConnectors = (connectors.data ?? []).filter((connection) => connection.kind === "mcp" && connection.is_enabled);
+  function toggleConnector(id: string) {
+    setSelectedConnectorIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
+  }
 
   return (
     <div className="grid h-[calc(100vh-112px)] min-h-[680px] gap-4 xl:grid-cols-[260px_1fr_340px]">
@@ -246,6 +261,28 @@ export default function ChatPage() {
               ))}
             </Select>
           </div>
+          <div className="space-y-3 rounded-md border border-zinc-200 p-3">
+            <label className="flex items-center gap-2 text-sm text-zinc-700">
+              <input type="checkbox" checked={useWebSearch} onChange={(event) => setUseWebSearch(event.target.checked)} />
+              <Globe className="h-4 w-4 text-sky-700" aria-hidden />
+              Web Search
+            </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-700">
+              <input type="checkbox" checked={useMcpTools} onChange={(event) => setUseMcpTools(event.target.checked)} />
+              <Plug className="h-4 w-4 text-emerald-700" aria-hidden />
+              MCP Tools
+            </label>
+            {liveConnectors.length ? (
+              <div className="space-y-2 border-t border-zinc-100 pt-3">
+                {liveConnectors.map((connection) => (
+                  <label key={connection.id} className="flex items-center gap-2 text-xs text-zinc-600">
+                    <input type="checkbox" checked={selectedConnectorIds.includes(connection.id)} onChange={() => toggleConnector(connection.id)} />
+                    {connection.name}
+                  </label>
+                ))}
+              </div>
+            ) : null}
+          </div>
           {selectedCitation ? (
             <div className="rounded-md border border-zinc-200 p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -255,6 +292,14 @@ export default function ChatPage() {
                 </Button>
               </div>
               <p className="text-sm font-medium text-zinc-800">{selectedCitation.document_name}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Badge tone={selectedCitation.source_type === "Indexed KB" ? "blue" : "amber"}>{selectedCitation.source_type ?? "Indexed KB"}</Badge>
+                {selectedCitation.source_url ? (
+                  <a className="break-all text-xs text-sky-700 hover:underline" href={selectedCitation.source_url} target="_blank" rel="noreferrer">
+                    {selectedCitation.source_url}
+                  </a>
+                ) : null}
+              </div>
               <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-600">{selectedCitation.preview}</p>
             </div>
           ) : (
@@ -283,6 +328,9 @@ function MessageBubble({ message, onCitation }: { message: ChatMessage; onCitati
                 onClick={() => onCitation(citation)}
               >
                 [{citation.id}] {citation.document_name}
+                <Badge className="ml-2" tone={citation.source_type === "Indexed KB" ? "blue" : "amber"}>
+                  {citation.source_type ?? "Indexed KB"}
+                </Badge>
               </button>
             ))}
           </div>

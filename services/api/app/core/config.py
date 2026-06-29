@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     enable_dev_embedding_provider: bool = True
     enable_llm_content_processing: bool = False
     rate_limit_per_minute: int = 120
+    connector_max_pages: int = 10
+    connector_request_timeout_seconds: int = 20
+    mcp_stdio_allowlist: str = ""
+
+    @property
+    def mcp_stdio_allowlist_values(self) -> list[str]:
+        return [value.strip() for value in self.mcp_stdio_allowlist.split(",") if value.strip()]
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

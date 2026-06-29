@@ -242,6 +242,104 @@ class TelegramAllowedUser(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class ConnectorConnection(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
+    __tablename__ = "connector_connections"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "user_id", "name"),
+        Index("ix_connector_connections_org_kind", "organization_id", "kind"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    scope: Mapped[str] = mapped_column(String(40), default="user", nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    encrypted_secret: Mapped[str | None] = mapped_column(Text)
+    masked_secret: Mapped[str | None] = mapped_column(String(32))
+    base_url: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), default="untested", nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ConnectorRun(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "connector_runs"
+    __table_args__ = (Index("ix_connector_runs_org_created", "organization_id", "created_at"),)
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    connector_connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connector_connections.id", ondelete="CASCADE"), index=True
+    )
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    status: Mapped[str] = mapped_column(String(40), default="queued", nullable=False)
+    options: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    total_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    logs: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ConnectorItem(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "connector_items"
+    __table_args__ = (
+        UniqueConstraint("connector_connection_id", "external_id"),
+        Index("ix_connector_items_org_connection", "organization_id", "connector_connection_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    connector_connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connector_connections.id", ondelete="CASCADE"), index=True
+    )
+    connector_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("connector_runs.id"))
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"))
+    external_id: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    content_type: Mapped[str | None] = mapped_column(String(120))
+    checksum: Mapped[str | None] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="discovered", nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
+class CompanyProfile(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
+    __tablename__ = "company_profiles"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "normalized_name"),
+        Index("ix_company_profiles_org_name", "organization_id", "normalized_name"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(260), nullable=False)
+    website_url: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    industry: Mapped[str | None] = mapped_column(String(200))
+    headquarters: Mapped[str | None] = mapped_column(String(240))
+    finance_summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
+class CompanyEvidence(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "company_evidence"
+    __table_args__ = (Index("ix_company_evidence_profile_field", "company_profile_id", "field_name"),)
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    company_profile_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("company_profiles.id", ondelete="CASCADE"), index=True
+    )
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"))
+    connector_item_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("connector_items.id"))
+    field_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    excerpt: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
 class ModelProfile(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "model_profiles"
 

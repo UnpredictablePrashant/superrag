@@ -122,6 +122,53 @@ export interface TelegramAllowedUser {
   created_at: string;
 }
 
+export interface ConnectorConnection {
+  id: string;
+  kind: "web" | "mcp" | string;
+  scope: "user" | "organization" | string;
+  user_id?: string | null;
+  name: string;
+  masked_secret?: string | null;
+  base_url?: string | null;
+  status: string;
+  is_enabled: boolean;
+  config: Record<string, unknown>;
+  last_synced_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConnectorRun {
+  id: string;
+  connector_connection_id: string;
+  requested_by_user_id?: string | null;
+  status: string;
+  options: Record<string, unknown>;
+  total_items: number;
+  processed_items: number;
+  error?: string | null;
+  logs: Array<Record<string, unknown>>;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+}
+
+export interface ConnectorItem {
+  id: string;
+  connector_connection_id: string;
+  connector_run_id?: string | null;
+  document_id?: string | null;
+  external_id: string;
+  title: string;
+  source_url?: string | null;
+  content_type?: string | null;
+  checksum?: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -200,4 +247,16 @@ export function getTelegramIntegration() {
 
 export function listTelegramAllowedUsers() {
   return api<TelegramAllowedUser[]>("/integrations/telegram/allowed-users");
+}
+
+export function listConnectors() {
+  return api<ConnectorConnection[]>("/connectors");
+}
+
+export function listConnectorRuns(connectionId: string) {
+  return api<ConnectorRun[]>(`/connectors/${connectionId}/runs`);
+}
+
+export function listConnectorItems(connectionId: string) {
+  return api<ConnectorItem[]>(`/connectors/${connectionId}/items`);
 }

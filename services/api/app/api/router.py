@@ -6,6 +6,8 @@ from app.api.routes import (
     audit_logs,
     auth,
     chat,
+    company_profiles,
+    connectors,
     documents,
     knowledge_bases,
     notifications,
@@ -27,6 +29,8 @@ api_router.include_router(documents.router)
 api_router.include_router(pipeline_runs.router)
 api_router.include_router(providers.router)
 api_router.include_router(profiles.router)
+api_router.include_router(connectors.router)
+api_router.include_router(company_profiles.router)
 api_router.include_router(chat.router)
 api_router.include_router(retrieval.router)
 api_router.include_router(telegram.router)

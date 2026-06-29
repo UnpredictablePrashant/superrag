@@ -10,7 +10,7 @@ from app.models.entities import ConfidentialityLevel, MemberRole, PipelineStage,
 
 
 class APIModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True, protected_namespaces=())
 
 
 class UserOut(APIModel):
@@ -248,6 +248,123 @@ class ProviderConnectionOut(APIModel):
     config: dict[str, Any]
 
 
+class ConnectorConnectionCreateIn(BaseModel):
+    kind: Literal["web", "mcp"]
+    scope: Literal["user", "organization"] = "user"
+    name: str = Field(min_length=1, max_length=160)
+    secret: str | None = None
+    base_url: str | None = None
+    is_enabled: bool = True
+    config: dict[str, Any] = {}
+
+
+class ConnectorConnectionPatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    secret: str | None = None
+    base_url: str | None = None
+    is_enabled: bool | None = None
+    config: dict[str, Any] | None = None
+
+
+class ConnectorConnectionOut(APIModel):
+    id: UUID
+    kind: str
+    scope: str
+    user_id: UUID | None
+    name: str
+    masked_secret: str | None
+    base_url: str | None
+    status: str
+    is_enabled: bool
+    config: dict[str, Any]
+    last_synced_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConnectorSyncIn(BaseModel):
+    knowledge_base_id: UUID
+    cleanup_profile_id: UUID | None = None
+    chunking_profile_id: UUID | None = None
+    embedding_profile_id: UUID | None = None
+    share_with_organization: bool = False
+    options: dict[str, Any] = {}
+
+
+class ConnectorRunOut(APIModel):
+    id: UUID
+    connector_connection_id: UUID
+    requested_by_user_id: UUID | None
+    status: str
+    options: dict[str, Any]
+    total_items: int
+    processed_items: int
+    error: str | None
+    logs: list[dict[str, Any]]
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class ConnectorItemOut(APIModel):
+    id: UUID
+    connector_connection_id: UUID
+    connector_run_id: UUID | None
+    document_id: UUID | None
+    external_id: str
+    title: str
+    source_url: str | None
+    content_type: str | None
+    checksum: str | None
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+    updated_at: datetime
+
+
+class LiveResultSaveIn(BaseModel):
+    knowledge_base_id: UUID
+    title: str = Field(min_length=1, max_length=255)
+    content: str = Field(min_length=1)
+    source_url: str | None = None
+    source_type: str = "live_mcp"
+    confidentiality: ConfidentialityLevel = ConfidentialityLevel.INTERNAL
+    tags: list[str] = []
+    share_with_organization: bool = False
+    custom_metadata: dict[str, Any] = {}
+
+
+class CompanyEvidenceOut(APIModel):
+    id: UUID
+    document_id: UUID | None
+    connector_item_id: UUID | None
+    field_name: str
+    source_type: str
+    source_url: str | None
+    excerpt: str | None
+    confidence: float | None
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+
+
+class CompanyProfileOut(APIModel):
+    id: UUID
+    name: str
+    normalized_name: str
+    website_url: str | None
+    description: str | None
+    industry: str | None
+    headquarters: str | None
+    finance_summary: dict[str, Any]
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+    updated_at: datetime
+
+
+class CompanyProfileDetailOut(CompanyProfileOut):
+    evidence: list[CompanyEvidenceOut] = []
+
+
 class ProfileOut(APIModel):
     id: UUID
     name: str
@@ -380,6 +497,9 @@ class ChatMessageCreateIn(BaseModel):
     content: str = Field(min_length=1)
     knowledge_base_ids: list[UUID] | None = None
     filters: dict[str, Any] = {}
+    use_web_search: bool = False
+    use_mcp_tools: bool = False
+    connector_connection_ids: list[UUID] = []
     debug: bool = False
 
 

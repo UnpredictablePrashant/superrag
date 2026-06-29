@@ -5,10 +5,13 @@ import { StatusBadge } from "@/components/status-badge";
 import {
   api,
   getTelegramIntegration,
+  listConnectors,
   listProfiles,
   listKnowledgeBases,
   listProviderModels,
   listTelegramAllowedUsers,
+  ConnectorConnection,
+  ConnectorRun,
   ModelOption,
   ProfilesResponse,
   ProviderConnection,
@@ -17,7 +20,7 @@ import {
 import { shortDate } from "@/lib/format";
 import { Badge, Button, Input, Label, Panel, Select } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Bot, KeyRound, RotateCw, Save, Send, ShieldCheck, SlidersHorizontal, Trash2, UserPlus } from "lucide-react";
+import { Bell, Bot, Globe, History, KeyRound, Play, Plug, RotateCw, Save, Send, ShieldCheck, SlidersHorizontal, Trash2, UserPlus } from "lucide-react";
 import * as React from "react";
 
 const tabs = [
@@ -27,6 +30,7 @@ const tabs = [
   "Cleanup Profiles",
   "Chunking Profiles",
   "Embedding Profiles",
+  "Connectors",
   "Telegram",
   "Notifications",
   "Security",
@@ -57,6 +61,7 @@ export default function SettingsPage() {
       {tab === "Organization" ? <OrganizationSettings /> : null}
       {tab === "AI Providers" ? <ProviderSettings /> : null}
       {tab.includes("Profiles") ? <ProfileSettings tab={tab} /> : null}
+      {tab === "Connectors" ? <ConnectorSettings /> : null}
       {tab === "Telegram" ? <TelegramSettings /> : null}
       {tab === "Notifications" ? <Notifications /> : null}
       {tab === "Security" ? <SecuritySettings /> : null}
@@ -218,6 +223,263 @@ function ProviderSettings() {
       </Panel>
     </div>
   );
+}
+
+function ConnectorSettings() {
+  const queryClient = useQueryClient();
+  const connectors = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
+  const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
+  const [kind, setKind] = React.useState<"web" | "mcp">("web");
+  const [scope, setScope] = React.useState<"user" | "organization">("user");
+  const [name, setName] = React.useState("");
+  const [baseUrl, setBaseUrl] = React.useState("");
+  const [secret, setSecret] = React.useState("");
+  const [seedUrls, setSeedUrls] = React.useState("");
+  const [allowlist, setAllowlist] = React.useState("");
+  const [companyName, setCompanyName] = React.useState("");
+  const [transport, setTransport] = React.useState("streamable_http");
+  const [enabledToolNames, setEnabledToolNames] = React.useState("");
+  const [syncKbId, setSyncKbId] = React.useState("");
+  const [activeConnectionId, setActiveConnectionId] = React.useState("");
+  const [enabled, setEnabled] = React.useState(true);
+  const [error, setError] = React.useState("");
+  const [notice, setNotice] = React.useState("");
+  const runs = useQuery({
+    queryKey: ["connector-runs", activeConnectionId],
+    enabled: Boolean(activeConnectionId),
+    queryFn: () => api<ConnectorRun[]>(`/connectors/${activeConnectionId}/runs`),
+  });
+
+  React.useEffect(() => {
+    if (!syncKbId && kbs.data?.[0]) setSyncKbId(kbs.data[0].id);
+  }, [kbs.data, syncKbId]);
+
+  const create = useMutation({
+    mutationFn: () => {
+      const config =
+        kind === "web"
+          ? {
+              seed_urls: splitList(seedUrls),
+              allowlist_domains: splitList(allowlist),
+              company_name: companyName || undefined,
+              max_depth: 0,
+            }
+          : {
+              transport,
+              enabled_tool_names: splitList(enabledToolNames),
+              tool_tags: Object.fromEntries(splitList(enabledToolNames).map((tool) => [tool, ["web_search", "knowledge_lookup"]])),
+            };
+      return api("/connectors", {
+        method: "POST",
+        body: JSON.stringify({
+          kind,
+          scope,
+          name: name || (kind === "web" ? "Web sync" : "MCP tools"),
+          secret: secret || undefined,
+          base_url: baseUrl || undefined,
+          is_enabled: enabled,
+          config,
+        }),
+      });
+    },
+    onSuccess: () => {
+      setName("");
+      setBaseUrl("");
+      setSecret("");
+      setNotice("Connector saved.");
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not save connector."),
+  });
+
+  async function test(connection: ConnectorConnection) {
+    setError("");
+    setNotice("");
+    const result = await api<{ status: string; message?: string }>(`/connectors/${connection.id}/test`, { method: "POST" });
+    setNotice(result.status === "ok" ? "Connector test passed." : result.message ?? "Connector test failed.");
+    queryClient.invalidateQueries({ queryKey: ["connectors"] });
+  }
+
+  async function sync(connection: ConnectorConnection) {
+    setError("");
+    setNotice("");
+    if (!syncKbId) {
+      setError("Choose a knowledge base before syncing.");
+      return;
+    }
+    await api(`/connectors/${connection.id}/sync`, {
+      method: "POST",
+      body: JSON.stringify({
+        knowledge_base_id: syncKbId,
+        share_with_organization: connection.scope === "organization",
+        options: { company_name: companyName || connection.config.company_name },
+      }),
+    });
+    setActiveConnectionId(connection.id);
+    setNotice("Connector sync queued.");
+    queryClient.invalidateQueries({ queryKey: ["connector-runs", connection.id] });
+  }
+
+  async function remove(connection: ConnectorConnection) {
+    await api(`/connectors/${connection.id}`, { method: "DELETE" });
+    queryClient.invalidateQueries({ queryKey: ["connectors"] });
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
+      <Panel className="p-5">
+        <div className="flex items-center gap-2">
+          <Plug className="h-5 w-5 text-emerald-700" aria-hidden />
+          <h3 className="font-semibold text-zinc-950">Connector setup</h3>
+        </div>
+        <ErrorBox message={error} />
+        {notice ? <div className="mt-3 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div> : null}
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="space-y-2">
+            <Label>Kind</Label>
+            <Select value={kind} onChange={(event) => setKind(event.target.value as "web" | "mcp")}>
+              <option value="web">Web crawl</option>
+              <option value="mcp">MCP server</option>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Scope</Label>
+            <Select value={scope} onChange={(event) => setScope(event.target.value as "user" | "organization")}>
+              <option value="user">My connector</option>
+              <option value="organization">Organization connector</option>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Name</Label>
+            <Input value={name} onChange={(event) => setName(event.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>{kind === "mcp" ? "MCP endpoint" : "Base URL"}</Label>
+            <Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>Secret</Label>
+            <Input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>Default knowledge base</Label>
+            <Select value={syncKbId} onChange={(event) => setSyncKbId(event.target.value)}>
+              <option value="">Select knowledge base</option>
+              {(kbs.data ?? []).map((kb) => (
+                <option key={kb.id} value={kb.id}>
+                  {kb.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          {kind === "web" ? (
+            <>
+              <div className="space-y-2 md:col-span-2">
+                <Label>Seed URLs</Label>
+                <Input value={seedUrls} onChange={(event) => setSeedUrls(event.target.value)} placeholder="https://example.com, https://example.com/about" />
+              </div>
+              <div className="space-y-2">
+                <Label>Allowlist domains</Label>
+                <Input value={allowlist} onChange={(event) => setAllowlist(event.target.value)} placeholder="example.com" />
+              </div>
+              <div className="space-y-2">
+                <Label>Company profile name</Label>
+                <Input value={companyName} onChange={(event) => setCompanyName(event.target.value)} />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label>Transport</Label>
+                <Select value={transport} onChange={(event) => setTransport(event.target.value)}>
+                  <option value="streamable_http">Streamable HTTP</option>
+                  <option value="stdio">Stdio</option>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Enabled tool names</Label>
+                <Input value={enabledToolNames} onChange={(event) => setEnabledToolNames(event.target.value)} placeholder="search,lookup" />
+              </div>
+            </>
+          )}
+          <label className="flex items-center gap-2 text-sm text-zinc-700">
+            <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+            Enabled
+          </label>
+        </div>
+        <Button className="mt-4" onClick={() => create.mutate()}>
+          <Save className="h-4 w-4" aria-hidden />
+          Save connector
+        </Button>
+      </Panel>
+
+      <Panel className="p-5">
+        <div className="flex items-center gap-2">
+          <Globe className="h-5 w-5 text-sky-700" aria-hidden />
+          <h3 className="font-semibold text-zinc-950">Available connectors</h3>
+        </div>
+        <div className="mt-4 divide-y divide-zinc-100">
+          {(connectors.data ?? []).map((connection) => (
+            <div key={connection.id} className="py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-medium text-zinc-950">{connection.name}</p>
+                  <p className="text-sm text-zinc-500">
+                    {connection.kind} / {connection.scope} {connection.masked_secret ? `- ${connection.masked_secret}` : ""}
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <StatusBadge status={connection.status} />
+                    {connection.is_enabled ? <Badge tone="green">Enabled</Badge> : <Badge>Paused</Badge>}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="icon" onClick={() => setActiveConnectionId(connection.id)}>
+                    <History className="h-4 w-4" aria-hidden />
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={() => remove(connection)}>
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="secondary" onClick={() => test(connection)}>
+                  <RotateCw className="h-4 w-4" aria-hidden />
+                  Test
+                </Button>
+                <Button variant="secondary" onClick={() => sync(connection)}>
+                  <Play className="h-4 w-4" aria-hidden />
+                  Sync
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {activeConnectionId ? (
+          <div className="mt-5 rounded-md bg-zinc-50 p-3">
+            <p className="font-medium text-zinc-950">Sync history</p>
+            <div className="mt-2 space-y-2">
+              {(runs.data ?? []).map((run) => (
+                <div key={run.id} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="text-zinc-600">{shortDate(run.created_at)}</span>
+                  <StatusBadge status={run.status} />
+                  <span className="text-zinc-500">
+                    {run.processed_items}/{run.total_items}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </Panel>
+    </div>
+  );
+}
+
+function splitList(value: string) {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function ProfileSettings({ tab }: { tab: string }) {

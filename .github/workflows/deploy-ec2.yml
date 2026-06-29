@@ -11,10 +11,10 @@ permissions:
   packages: write
 
 env:
-  EC2_HOST: ${{ vars.EC2_HOST || '18.188.234.72' }}
-  EC2_USER: ${{ vars.EC2_USER || 'ubuntu' }}
-  EC2_APP_DIR: ${{ vars.EC2_APP_DIR || '/opt/rag-console' }}
-  EC2_PORT: ${{ vars.EC2_PORT || '22' }}
+  EC2_HOST: ${{ secrets.EC2_HOST || vars.EC2_HOST || '18.188.234.72' }}
+  EC2_USER: ${{ secrets.EC2_USER || vars.EC2_USER || 'ubuntu' }}
+  EC2_APP_DIR: ${{ secrets.EC2_APP_DIR || vars.EC2_APP_DIR || '/opt/rag-console' }}
+  EC2_PORT: ${{ secrets.EC2_PORT || vars.EC2_PORT || '22' }}
   NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'https://rag.atharvaai.com/api' }}
 
 jobs:
@@ -118,12 +118,26 @@ jobs:
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           EC2_ENV_FILE_B64: ${{ secrets.EC2_ENV_FILE_B64 }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL || 'redis://redis:6379/0' }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER || 'rag' }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB || 'rag_console' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_REGION: ${{ secrets.S3_REGION || 'us-east-1' }}
+          SES_EMAIL_FROM: ${{ secrets.SES_EMAIL_FROM }}
+          SES_REGION: ${{ secrets.SES_REGION || secrets.S3_REGION || 'us-east-1' }}
+          MAX_UPLOAD_BYTES: ${{ secrets.MAX_UPLOAD_BYTES || '104857600' }}
         with:
           host: ${{ env.EC2_HOST }}
           username: ${{ env.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ env.EC2_PORT }}
-          envs: API_IMAGE,WEB_IMAGE,GHCR_USERNAME,GHCR_TOKEN,EC2_ENV_FILE_B64
+          envs: API_IMAGE,WEB_IMAGE,GHCR_USERNAME,GHCR_TOKEN,EC2_ENV_FILE_B64,DATABASE_URL,REDIS_URL,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,JWT_SECRET,ENCRYPTION_KEY,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,S3_BUCKET,S3_REGION,SES_EMAIL_FROM,SES_REGION,MAX_UPLOAD_BYTES
           script: |
             set -eu
 
@@ -135,11 +149,64 @@ jobs:
 
             if [ -n "${EC2_ENV_FILE_B64:-}" ]; then
               printf '%s' "${EC2_ENV_FILE_B64}" | base64 -d > .env
-              chmod 600 .env
+            else
+              missing=""
+              for name in DATABASE_URL REDIS_URL JWT_SECRET ENCRYPTION_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S3_BUCKET S3_REGION SES_EMAIL_FROM SES_REGION; do
+                eval "value=\${$name:-}"
+                if [ -z "${value}" ]; then
+                  missing="${missing} ${name}"
+                fi
+              done
+
+              if [ -n "${missing}" ]; then
+                echo "Missing required deployment secrets:${missing}"
+                exit 1
+              fi
+
+              postgres_password="${POSTGRES_PASSWORD:-}"
+              if [ -z "${postgres_password}" ]; then
+                url_without_scheme="${DATABASE_URL#*://}"
+                credentials="${url_without_scheme%%@*}"
+                if [ "${credentials}" != "${url_without_scheme}" ] && [ "${credentials#*:}" != "${credentials}" ]; then
+                  postgres_password="${credentials#*:}"
+                else
+                  postgres_password="rag-console-local-postgres"
+                fi
+              fi
+
+              cat > .env <<EOF
+            APP_ENV=production
+            APP_DOMAIN=rag.atharvaai.com
+            API_BASE_URL=https://rag.atharvaai.com
+            WEB_BASE_URL=https://rag.atharvaai.com
+            POSTGRES_USER=${POSTGRES_USER}
+            POSTGRES_PASSWORD=${postgres_password}
+            POSTGRES_DB=${POSTGRES_DB}
+            DATABASE_URL=${DATABASE_URL}
+            REDIS_URL=${REDIS_URL}
+            JWT_SECRET=${JWT_SECRET}
+            ENCRYPTION_KEY=${ENCRYPTION_KEY}
+            ALLOW_DEV_AUTH_CODES=false
+            CORS_ORIGINS=https://rag.atharvaai.com
+            S3_ENDPOINT_URL=https://s3.${S3_REGION}.amazonaws.com
+            S3_PUBLIC_ENDPOINT_URL=https://s3.${S3_REGION}.amazonaws.com
+            S3_BUCKET=${S3_BUCKET}
+            S3_REGION=${S3_REGION}
+            S3_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+            S3_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+            AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+            MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES}
+            EMAIL_BACKEND=ses
+            EMAIL_FROM=${SES_EMAIL_FROM}
+            AWS_REGION=${SES_REGION}
+            EOF
             fi
 
+            chmod 600 .env
+
             if [ ! -s .env ]; then
-              echo "Missing ${{ env.EC2_APP_DIR }}/.env. Set EC2_ENV_FILE_B64 or create the file on the instance."
+              echo "Missing ${{ env.EC2_APP_DIR }}/.env."
               exit 1
             fi
 

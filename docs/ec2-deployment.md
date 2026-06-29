@@ -15,18 +15,28 @@ This deployment path builds the API and web Docker images in GitHub Actions, pus
 Add these repository secrets:
 
 - `EC2_SSH_KEY`: private SSH key that can connect to the instance.
-- `EC2_ENV_FILE_B64`: base64-encoded contents of the EC2 `.env` file.
+- `DATABASE_URL`: production database URL. For the bundled EC2 Postgres service, use host `postgres`.
+- `REDIS_URL`: production Redis URL. For the bundled EC2 Redis service, use `redis://redis:6379/0`.
+- `JWT_SECRET`: random session-signing secret with at least 32 characters.
+- `ENCRYPTION_KEY`: Fernet key used to encrypt provider credentials.
+- `AWS_ACCESS_KEY_ID`: AWS access key for S3 and SES. The workflow maps this to both `S3_ACCESS_KEY_ID` and `AWS_ACCESS_KEY_ID` in the container env.
+- `AWS_SECRET_ACCESS_KEY`: AWS secret access key for S3 and SES. The workflow maps this to both `S3_SECRET_ACCESS_KEY` and `AWS_SECRET_ACCESS_KEY` in the container env.
+- `S3_BUCKET`: S3 bucket name for document uploads.
+- `S3_REGION`: S3 bucket region.
+- `SES_EMAIL_FROM`: verified SES sender address, for example `RAG Console <no-reply@atharvaai.com>`.
+- `SES_REGION`: SES region.
+- `MAX_UPLOAD_BYTES`: optional upload limit. Defaults to `104857600`.
+- `POSTGRES_PASSWORD`: optional. Add it when `DATABASE_URL` uses the bundled EC2 Postgres service and make sure both values use the same password.
+- `EC2_HOST`, `EC2_USER`, `EC2_APP_DIR`, and `EC2_PORT`: optional as secrets. They default to `18.188.234.72`, `ubuntu`, `/opt/rag-console`, and `22`.
+- `EC2_ENV_FILE_B64`: optional alternative to the individual app secrets above. When set, the workflow writes this decoded file directly to EC2.
 - `GHCR_TOKEN`: GitHub token with `read:packages` for pulling private GHCR images from EC2. Public packages can omit this.
 
 Add these repository variables:
 
-- `EC2_HOST`: optional host override. Defaults to `18.188.234.72`.
-- `EC2_USER`: optional SSH username override. Defaults to `ubuntu`.
 - `NEXT_PUBLIC_API_URL`: browser-facing API URL. Defaults to `https://rag.atharvaai.com/api`.
-- `EC2_APP_DIR`: optional app directory override. Defaults to `/opt/rag-console`.
-- `EC2_PORT`: optional SSH port override. Defaults to `22`.
+- `EC2_HOST`, `EC2_USER`, `EC2_APP_DIR`, and `EC2_PORT`: optional non-secret overrides if you prefer repository variables over repository secrets.
 
-Create and review the production env file:
+If you prefer the single bundled secret path, create and review the production env file:
 
 ```powershell
 Copy-Item deploy\ec2\ec2.env.example .env.ec2.production
@@ -40,7 +50,7 @@ $envText = Get-Content -Raw .env.ec2.production
 [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($envText))
 ```
 
-Save the result as `EC2_ENV_FILE_B64`.
+Save the result as `EC2_ENV_FILE_B64`. If you use the individual secrets listed above, this bundled secret is not needed.
 
 Generate a Fernet key for `ENCRYPTION_KEY` with:
 

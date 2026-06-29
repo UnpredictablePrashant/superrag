@@ -1,8 +1,0 @@
-{$APP_DOMAIN:rag.atharvaai.com} {
-	encode zstd gzip
-
-	@api path /api/* /healthz /docs /redoc /openapi.json
-	reverse_proxy @api api:8000
-
-	reverse_proxy web:3000
-}

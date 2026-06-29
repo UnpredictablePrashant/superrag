@@ -1,6 +1,6 @@
 # EC2 Deployment
 
-This deployment path builds the API and web Docker images in GitHub Actions, pushes them to GitHub Container Registry, copies a production Compose file to an EC2 instance, and restarts the stack over SSH.
+This deployment path builds the API and web Docker images in GitHub Actions, pushes them to GitHub Container Registry, installs Nginx and Certbot on the EC2 instance, configures path-based reverse proxy routing, and restarts the Docker Compose stack over SSH.
 
 ## EC2 prerequisites
 
@@ -9,6 +9,8 @@ This deployment path builds the API and web Docker images in GitHub Actions, pus
 - A security group that allows SSH from your IP and public web traffic on ports `80` and `443`.
 - An application directory on the instance, defaulting to `/opt/rag-console`.
 - An S3 bucket and email provider credentials for production uploads and OTP email.
+
+The workflow installs Nginx, Certbot, and curl on the EC2 host. Nginx owns public ports `80` and `443`; Docker publishes the API and web containers only on localhost.
 
 ## GitHub configuration
 
@@ -27,6 +29,7 @@ Add these repository secrets:
 - `SES_REGION`: SES region.
 - `MAX_UPLOAD_BYTES`: optional upload limit. Defaults to `104857600`.
 - `POSTGRES_PASSWORD`: optional. Add it when `DATABASE_URL` uses the bundled EC2 Postgres service and make sure both values use the same password.
+- `TLS_EMAIL`: optional email address for Let's Encrypt certificate notices. If omitted, Certbot registers without an email address.
 - `EC2_HOST`, `EC2_USER`, `EC2_APP_DIR`, and `EC2_PORT`: optional as secrets. They default to `18.188.234.72`, `ubuntu`, `/opt/rag-console`, and `22`.
 - `EC2_ENV_FILE_B64`: optional alternative to the individual app secrets above. When set, the workflow writes this decoded file directly to EC2.
 - `GHCR_TOKEN`: GitHub token with `read:packages` for pulling private GHCR images from EC2. Public packages can omit this.
@@ -62,8 +65,8 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 Point `rag.atharvaai.com` at the EC2 instance before the first deployment so Caddy can request the TLS certificate. Then push to `main` or run the `Deploy to EC2` workflow manually from GitHub Actions.
 
-The workflow writes `/opt/rag-console/docker-compose.ec2.yml`, writes `.env` when `EC2_ENV_FILE_B64` is set, pulls the new images, starts Postgres, Redis, API, worker, and web services, then checks `http://localhost:8000/healthz` inside the API container.
+The workflow writes `/opt/rag-console/docker-compose.ec2.yml`, writes `.env`, installs and configures Nginx, requests a Let's Encrypt certificate for `rag.atharvaai.com`, pulls the new images, starts Postgres, Redis, API, worker, and web services, then checks health through both the API container and Nginx.
 
-The EC2 Compose stack includes Caddy. It terminates HTTPS for `rag.atharvaai.com`, sends `/api/*`, `/docs`, `/redoc`, `/openapi.json`, and `/healthz` to the FastAPI service, and sends all other traffic to the Next.js web service.
+Nginx terminates HTTPS for `rag.atharvaai.com`, sends `/api/*`, `/docs`, `/redoc`, `/openapi.json`, and `/healthz` to the FastAPI service on `127.0.0.1:8000`, and sends all other traffic to the Next.js web service on `127.0.0.1:3000`.
 
 If you move behind an ALB or another reverse proxy later, update `NEXT_PUBLIC_API_URL`, `APP_DOMAIN`, `WEB_BASE_URL`, and `CORS_ORIGINS` together.

@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-rag}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag-console-local-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-rag_console}
     volumes:
       - postgres-data:/var/lib/postgresql/data

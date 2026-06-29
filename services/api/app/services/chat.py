@@ -68,8 +68,8 @@ def generate_grounded_answer(
     if not candidates or not context.strip():
         return GroundedAnswer(
             answer=(
-                "I do not know from the indexed knowledge base yet. "
-                "No sufficiently relevant authorized source was retrieved for this question."
+                "I do not know from the selected sources yet. "
+                "No sufficiently relevant authorized evidence was retrieved for this question."
             ),
             citations=[],
             suggested_questions=[
@@ -101,8 +101,8 @@ def generate_local_grounded_answer(query: str, candidates: list[Candidate]) -> G
     if not candidates or not context.strip():
         return GroundedAnswer(
             answer=(
-                "I do not know from the indexed knowledge base yet. "
-                "No sufficiently relevant authorized source was retrieved for this question."
+                "I do not know from the selected sources yet. "
+                "No sufficiently relevant authorized evidence was retrieved for this question."
             ),
             citations=[],
             suggested_questions=[

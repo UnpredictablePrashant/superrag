@@ -6,15 +6,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
   Bot,
-  BookOpenText,
-  Database,
-  FileStack,
-  Gauge,
+  ClipboardList,
+  DatabaseZap,
   LogOut,
   MessageSquare,
   Settings,
   Sparkles,
-  UploadCloud,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -22,14 +19,11 @@ import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 
 const nav = [
-  { href: "/", label: "Dashboard", icon: Gauge },
-  { href: "/knowledge", label: "Knowledge", icon: Database },
-  { href: "/ingestion", label: "Ingestion", icon: UploadCloud },
-  { href: "/pipeline", label: "Pipeline", icon: FileStack },
-  { href: "/chat", label: "Chat", icon: MessageSquare },
-  { href: "/help", label: "Docs", icon: BookOpenText },
+  { href: "/ask", label: "Ask", icon: MessageSquare },
+  { href: "/data", label: "Data Hub", icon: DatabaseZap },
+  { href: "/activity", label: "Activity", icon: ClipboardList },
   { href: "/team", label: "Team", icon: Users },
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/settings", label: "Admin Settings", icon: Settings },
 ];
 
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
@@ -65,7 +59,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               <Bot className="h-5 w-5" aria-hidden />
             </span>
             <div>
-              <p className="font-semibold text-zinc-950">RAG Console</p>
+              <p className="font-semibold text-zinc-950">Enterprise RAG</p>
               <p className="text-xs text-zinc-500">{me.data?.organization?.name ?? "No organization"}</p>
             </div>
           </div>
@@ -105,17 +99,17 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       <div className="lg:pl-72">
         <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-zinc-200 bg-white/90 px-4 backdrop-blur lg:px-8">
           <div>
-            <p className="text-sm font-medium text-zinc-500">Enterprise knowledge operations</p>
+            <p className="text-sm font-medium text-zinc-500">Connected company knowledge</p>
             <h1 className="text-lg font-semibold text-zinc-950">{me.data?.organization?.name ?? "RAG Console"}</h1>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="secondary" size="icon" title="Notifications">
               <Bell className="h-4 w-4" aria-hidden />
             </Button>
-            <Link href="/chat">
+            <Link href="/ask">
               <Button>
                 <MessageSquare className="h-4 w-4" aria-hidden />
-                New answer
+                Ask
               </Button>
             </Link>
           </div>

@@ -278,6 +278,12 @@ class ConnectorConnectionOut(APIModel):
     is_enabled: bool
     config: dict[str, Any]
     last_synced_at: datetime | None
+    sync_supported: bool = True
+    live_tools_supported: bool = False
+    web_search_supported: bool = False
+    tool_count: int = 0
+    last_sync_status: str | None = None
+    indexed_item_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -497,6 +503,7 @@ class ChatMessageCreateIn(BaseModel):
     content: str = Field(min_length=1)
     knowledge_base_ids: list[UUID] | None = None
     filters: dict[str, Any] = {}
+    answer_mode: Literal["company_data", "live_web", "mcp_tools", "blended"] | None = None
     use_web_search: bool = False
     use_mcp_tools: bool = False
     connector_connection_ids: list[UUID] = []
@@ -545,3 +552,17 @@ class AuditLogOut(APIModel):
     resource_id: str | None
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
     created_at: datetime
+
+
+class WorkspaceSummaryOut(BaseModel):
+    organization: OrganizationOut | None = None
+    document_count: int
+    indexed_document_count: int
+    knowledge_base_count: int
+    active_source_count: int
+    failed_sync_count: int
+    review_item_count: int
+    available_answer_modes: list[str]
+    default_knowledge_base: dict[str, Any] | None = None
+    default_chat_model: dict[str, Any] | None = None
+    source_health: dict[str, int]

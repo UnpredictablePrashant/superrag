@@ -1,5 +1,7 @@
 import type {
+  AnswerMode,
   ChatMessage,
+  Confidentiality,
   DocumentRecord,
   KnowledgeBase,
   Organization,
@@ -84,10 +86,21 @@ export interface EmbeddingProfile {
   config: Record<string, unknown>;
 }
 
+export interface ProcessingProfile {
+  id: string;
+  name: string;
+  strategy: string;
+  use_for_retrieval?: string;
+  pause_on_quality_issues?: boolean;
+  chunk_size_tokens?: number;
+  overlap_tokens?: number;
+  config: Record<string, unknown>;
+}
+
 export interface ProfilesResponse {
   chat_profiles: ChatProfile[];
-  cleanup_profiles: Array<Record<string, unknown>>;
-  chunking_profiles: Array<Record<string, unknown>>;
+  cleanup_profiles: ProcessingProfile[];
+  chunking_profiles: ProcessingProfile[];
   embedding_profiles: EmbeddingProfile[];
 }
 
@@ -134,6 +147,12 @@ export interface ConnectorConnection {
   is_enabled: boolean;
   config: Record<string, unknown>;
   last_synced_at?: string | null;
+  sync_supported: boolean;
+  live_tools_supported: boolean;
+  web_search_supported: boolean;
+  tool_count: number;
+  last_sync_status?: string | null;
+  indexed_item_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -165,6 +184,57 @@ export interface ConnectorItem {
   checksum?: string | null;
   status: string;
   metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceSummary {
+  organization?: Organization | null;
+  document_count: number;
+  indexed_document_count: number;
+  knowledge_base_count: number;
+  active_source_count: number;
+  failed_sync_count: number;
+  review_item_count: number;
+  available_answer_modes: AnswerMode[];
+  default_knowledge_base?: { id: string; name: string; confidentiality: string } | null;
+  default_chat_model?: { id?: string | null; name: string; provider: string; model_name: string } | null;
+  source_health: Record<string, number>;
+}
+
+export interface DocumentQualityReport {
+  id?: string;
+  issues: Array<Record<string, unknown>>;
+  severity: string;
+  requires_review: boolean;
+  summary?: string | null;
+  created_at?: string;
+}
+
+export interface CompanyEvidence {
+  id: string;
+  document_id?: string | null;
+  connector_item_id?: string | null;
+  field_name: string;
+  source_type: string;
+  source_url?: string | null;
+  excerpt?: string | null;
+  confidence?: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface CompanyProfile {
+  id: string;
+  name: string;
+  normalized_name: string;
+  website_url?: string | null;
+  description?: string | null;
+  industry?: string | null;
+  headquarters?: string | null;
+  finance_summary: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  evidence?: CompanyEvidence[];
   created_at: string;
   updated_at: string;
 }
@@ -259,4 +329,45 @@ export function listConnectorRuns(connectionId: string) {
 
 export function listConnectorItems(connectionId: string) {
   return api<ConnectorItem[]>(`/connectors/${connectionId}/items`);
+}
+
+export function getWorkspaceSummary() {
+  return api<WorkspaceSummary>("/workspace/summary");
+}
+
+export function getDocumentQualityReport(documentId: string) {
+  return api<DocumentQualityReport>(`/documents/${documentId}/quality-report`);
+}
+
+export function reviewDocument(documentId: string, action: string, editedText?: string) {
+  return api(`/documents/${documentId}/review-action`, {
+    method: "POST",
+    body: JSON.stringify({ action, edited_text: editedText }),
+  });
+}
+
+export function saveLiveResult(payload: {
+  knowledge_base_id: string;
+  title: string;
+  content: string;
+  source_url?: string | null;
+  source_type: string;
+  confidentiality?: Confidentiality;
+  tags?: string[];
+  share_with_organization?: boolean;
+  custom_metadata?: Record<string, unknown>;
+}) {
+  return api<DocumentRecord>("/connectors/live-results", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listCompanyProfiles(search?: string) {
+  const qs = search ? `?search=${encodeURIComponent(search)}` : "";
+  return api<CompanyProfile[]>(`/company-profiles${qs}`);
+}
+
+export function getCompanyProfile(id: string) {
+  return api<CompanyProfile>(`/company-profiles/${id}`);
 }

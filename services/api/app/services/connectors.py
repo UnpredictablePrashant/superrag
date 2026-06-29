@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from bs4 import BeautifulSoup
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -187,6 +187,30 @@ def get_connector_adapter(connection: ConnectorConnection) -> ConnectorAdapter:
     if connection.kind == "mcp":
         return MCPConnector(connection)
     raise ValueError(f"Unsupported connector kind: {connection.kind}")
+
+
+def connector_capability_metadata(db: Session, connection: ConnectorConnection) -> dict[str, Any]:
+    latest_run = db.scalar(
+        select(ConnectorRun)
+        .where(ConnectorRun.connector_connection_id == connection.id)
+        .order_by(ConnectorRun.created_at.desc())
+        .limit(1)
+    )
+    indexed_item_count = db.scalar(
+        select(func.count(ConnectorItem.id)).where(
+            ConnectorItem.connector_connection_id == connection.id,
+            ConnectorItem.document_id.is_not(None),
+        )
+    )
+    configured_tool_names = _configured_mcp_tool_names(connection.config)
+    return {
+        "sync_supported": connection.kind in {"web", "mcp"},
+        "live_tools_supported": connection.kind == "mcp",
+        "web_search_supported": _connector_supports_web_search(connection, configured_tool_names),
+        "tool_count": len(configured_tool_names),
+        "last_sync_status": latest_run.status if latest_run else None,
+        "indexed_item_count": int(indexed_item_count or 0),
+    }
 
 
 def sync_connector_connection(
@@ -850,6 +874,31 @@ def _tool_has_tag(tool: dict[str, Any], connection_config: dict[str, Any], tag: 
     if tag == "web_search" and ("web" in tags or "search" in name or "web search" in description):
         return True
     return bool(tag == "knowledge_lookup" and ("lookup" in name or "knowledge" in description))
+
+
+def _configured_mcp_tool_names(connection_config: dict[str, Any]) -> set[str]:
+    names = {
+        str(value).lower()
+        for value in connection_config.get("enabled_tool_names", [])
+        if str(value).strip()
+    }
+    configured_tags = connection_config.get("tool_tags", {})
+    if isinstance(configured_tags, dict):
+        names.update(str(name).lower() for name in configured_tags if str(name).strip())
+    return names
+
+
+def _connector_supports_web_search(connection: ConnectorConnection, configured_tool_names: set[str]) -> bool:
+    if connection.kind != "mcp":
+        return False
+    configured_tags = connection.config.get("tool_tags", {})
+    if isinstance(configured_tags, dict):
+        for tags in configured_tags.values():
+            if isinstance(tags, list) and any(str(tag).lower() == "web_search" for tag in tags):
+                return True
+    if any("web" in name or "search" in name for name in configured_tool_names):
+        return True
+    return not configured_tool_names
 
 
 def _looks_like_lookup_tool(name: str) -> bool:

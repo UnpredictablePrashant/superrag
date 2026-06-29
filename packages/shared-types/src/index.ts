@@ -105,3 +105,5 @@ export interface Citation {
   heading_hierarchy: string[];
   preview: string;
 }
+
+export type AnswerMode = "company_data" | "live_web" | "mcp_tools" | "blended";

@@ -24,6 +24,7 @@ from app.schemas.api import (
 )
 from app.services.audit import write_audit_log
 from app.services.connectors import (
+    connector_capability_metadata,
     get_connector_adapter,
     save_live_result_as_document,
 )
@@ -36,7 +37,7 @@ router = APIRouter(prefix="/connectors", tags=["connectors"])
 def list_connectors(
     ctx: AuthContext = Depends(require_organization),
     db: Session = Depends(get_db),
-) -> list[ConnectorConnection]:
+) -> list[dict]:
     rows = list(
         db.scalars(
             select(ConnectorConnection)
@@ -47,11 +48,12 @@ def list_connectors(
             .order_by(ConnectorConnection.created_at.desc())
         )
     )
-    return [
+    visible = [
         connection
         for connection in rows
         if connection.scope == "organization" or connection.user_id == ctx.user.id
     ]
+    return [_connection_out(db, connection) for connection in visible]
 
 
 @router.post("", response_model=ConnectorConnectionOut)
@@ -60,7 +62,7 @@ def create_connector(
     request: Request,
     ctx: AuthContext = Depends(require_organization),
     db: Session = Depends(get_db),
-) -> ConnectorConnection:
+) -> dict:
     _require_scope_management(ctx, payload.scope, owner_user_id=ctx.user.id)
     duplicate = db.scalar(
         select(ConnectorConnection).where(
@@ -101,7 +103,7 @@ def create_connector(
     )
     db.commit()
     db.refresh(connection)
-    return connection
+    return _connection_out(db, connection)
 
 
 @router.patch("/{connection_id}", response_model=ConnectorConnectionOut)
@@ -111,7 +113,7 @@ def patch_connector(
     request: Request,
     ctx: AuthContext = Depends(require_organization),
     db: Session = Depends(get_db),
-) -> ConnectorConnection:
+) -> dict:
     connection = _get_connection(db, ctx, connection_id, manage=True)
     if payload.name is not None:
         connection.name = payload.name
@@ -139,7 +141,7 @@ def patch_connector(
     )
     db.commit()
     db.refresh(connection)
-    return connection
+    return _connection_out(db, connection)
 
 
 @router.delete("/{connection_id}")
@@ -195,6 +197,25 @@ def test_connector(
     )
     db.commit()
     return result
+
+
+def _connection_out(db: Session, connection: ConnectorConnection) -> dict:
+    return {
+        "id": connection.id,
+        "kind": connection.kind,
+        "scope": connection.scope,
+        "user_id": connection.user_id,
+        "name": connection.name,
+        "masked_secret": connection.masked_secret,
+        "base_url": connection.base_url,
+        "status": connection.status,
+        "is_enabled": connection.is_enabled,
+        "config": connection.config,
+        "last_synced_at": connection.last_synced_at,
+        "created_at": connection.created_at,
+        "updated_at": connection.updated_at,
+        **connector_capability_metadata(db, connection),
+    }
 
 
 @router.post("/{connection_id}/sync", response_model=ConnectorRunOut)

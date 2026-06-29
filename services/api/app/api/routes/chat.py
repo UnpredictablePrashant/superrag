@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import AuthContext, capability
 from app.core.permissions import require_capability
 from app.db.session import SessionLocal, get_db
-from app.models.entities import ChatMessage, ChatSession
+from app.models.entities import ChatMessage, ChatSession, RetrievalEvent
 from app.schemas.api import (
     ChatMessageCreateIn,
     ChatMessageOut,
@@ -135,11 +135,13 @@ def create_chat_message(
     db: Session = Depends(get_db),
 ) -> ChatTurnOut:
     session = _get_session(db, ctx, chat_session_id)
+    answer_mode, use_web_search, use_mcp_tools, indexed_scope = _resolve_answer_mode(payload)
     kb_ids = [str(value) for value in payload.knowledge_base_ids] if payload.knowledge_base_ids else session.knowledge_base_ids
     filters = {**session.retrieval_config, **payload.filters}
-    if payload.use_web_search:
+    filters["answer_mode"] = answer_mode
+    if use_web_search:
         filters["use_web_search"] = True
-    if payload.use_mcp_tools:
+    if use_mcp_tools:
         filters["use_mcp_tools"] = True
     if payload.connector_connection_ids:
         filters["connector_connection_ids"] = [str(value) for value in payload.connector_connection_ids]
@@ -151,17 +153,37 @@ def create_chat_message(
     )
     db.add(user_message)
     db.flush()
-    candidates, event = retrieve(
-        db,
-        organization_id=ctx.organization_id,
-        user_id=ctx.user.id,
-        role=ctx.role or "",
-        query=payload.content,
-        knowledge_base_ids=kb_ids,
-        filters=filters,
-        debug=payload.debug,
-        chat_session_id=session.id,
-    )
+    if indexed_scope:
+        candidates, event = retrieve(
+            db,
+            organization_id=ctx.organization_id,
+            user_id=ctx.user.id,
+            role=ctx.role or "",
+            query=payload.content,
+            knowledge_base_ids=kb_ids,
+            filters=filters,
+            debug=payload.debug,
+            chat_session_id=session.id,
+        )
+    else:
+        candidates = []
+        event = RetrievalEvent(
+            organization_id=ctx.organization_id,
+            user_id=ctx.user.id,
+            chat_session_id=session.id,
+            original_query=payload.content,
+            rewritten_query=payload.content.strip(),
+            applied_filters={"knowledge_base_ids": [], **filters},
+            vector_candidates=[],
+            keyword_candidates=[],
+            rrf_ranking=[],
+            reranker_scores=[],
+            final_context_chunks=[],
+            token_usage={"estimated_context_tokens": 0},
+            latency_ms_by_stage={},
+        )
+        db.add(event)
+    db.flush()
     if filters.get("use_web_search") or filters.get("use_mcp_tools"):
         require_capability(ctx.role or "", "use_live_tools")
         live_candidates = live_connector_candidates(
@@ -169,8 +191,8 @@ def create_chat_message(
             organization_id=ctx.organization_id,
             user_id=ctx.user.id,
             query=payload.content,
-            use_web_search=bool(filters.get("use_web_search")),
-            use_mcp_tools=bool(filters.get("use_mcp_tools")),
+            use_web_search=use_web_search,
+            use_mcp_tools=use_mcp_tools,
             connector_connection_ids=[str(value) for value in filters.get("connector_connection_ids", [])],
             chat_session_id=session.id,
         )
@@ -238,6 +260,20 @@ def _candidate_debug(candidate: Candidate) -> dict:
         "preview": candidate.text[:280],
         "metadata": candidate.metadata,
     }
+
+
+def _resolve_answer_mode(payload: ChatMessageCreateIn) -> tuple[str, bool, bool, bool]:
+    if payload.answer_mode == "company_data":
+        return "company_data", False, False, True
+    if payload.answer_mode == "live_web":
+        return "live_web", True, False, False
+    if payload.answer_mode == "mcp_tools":
+        return "mcp_tools", False, True, False
+    if payload.answer_mode == "blended":
+        return "blended", True, True, True
+    if payload.use_web_search or payload.use_mcp_tools:
+        return "blended", payload.use_web_search, payload.use_mcp_tools, True
+    return "company_data", False, False, True
 
 
 @router.get("/{chat_session_id}/stream")

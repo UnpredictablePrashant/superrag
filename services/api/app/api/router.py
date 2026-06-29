@@ -18,6 +18,7 @@ from app.api.routes import (
     retrieval,
     telegram,
     uploads,
+    workspace,
 )
 
 api_router = APIRouter(prefix="/api")
@@ -36,3 +37,4 @@ api_router.include_router(retrieval.router)
 api_router.include_router(telegram.router)
 api_router.include_router(notifications.router)
 api_router.include_router(audit_logs.router)
+api_router.include_router(workspace.router)

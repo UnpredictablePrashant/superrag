@@ -30,7 +30,6 @@ const tabs = [
   "Cleanup Profiles",
   "Chunking Profiles",
   "Embedding Profiles",
-  "Connectors",
   "Telegram",
   "Notifications",
   "Security",
@@ -58,7 +57,7 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold text-zinc-950">Settings</h2>
+        <h2 className="text-2xl font-semibold text-zinc-950">Admin Settings</h2>
         <p className="mt-1 text-sm text-zinc-500">Manage tenant configuration, AI providers, security, and audit history.</p>
       </div>
       <div className="flex flex-wrap gap-2">
@@ -77,7 +76,6 @@ export default function SettingsPage() {
       {tab === "Organization" ? <OrganizationSettings /> : null}
       {tab === "AI Providers" ? <ProviderSettings /> : null}
       {tab.includes("Profiles") ? <ProfileSettings tab={tab} /> : null}
-      {tab === "Connectors" ? <ConnectorSettings /> : null}
       {tab === "Telegram" ? <TelegramSettings /> : null}
       {tab === "Notifications" ? <Notifications /> : null}
       {tab === "Security" ? <SecuritySettings /> : null}
@@ -1023,7 +1021,7 @@ function ProfileSelect({
   label: string;
   value: string;
   onChange: (value: string) => void;
-  options: Array<Record<string, unknown>>;
+  options: Array<{ id: string; name: string }>;
 }) {
   return (
     <div className="space-y-2">
@@ -1031,8 +1029,8 @@ function ProfileSelect({
       <Select value={value} onChange={(event) => onChange(event.target.value)}>
         <option value="">Default</option>
         {options.map((profile) => (
-          <option key={String(profile.id)} value={String(profile.id)}>
-            {String(profile.name)}
+          <option key={profile.id} value={profile.id}>
+            {profile.name}
           </option>
         ))}
       </Select>

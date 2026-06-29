@@ -47,7 +47,7 @@ export default function OnboardingPage() {
           body: JSON.stringify({ provider, name: `${provider} default`, api_key: apiKey || undefined }),
         });
       }
-      router.replace("/ingestion");
+      router.replace("/data");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not finish onboarding.");
     } finally {
@@ -123,7 +123,7 @@ export default function OnboardingPage() {
         <div className="mt-6 flex justify-end">
           <Button disabled={!companyName || !kbName || isBusy} onClick={finish}>
             {isBusy ? <UploadCloud className="h-4 w-4 animate-pulse" /> : <ArrowRight className="h-4 w-4" />}
-            Continue to ingestion
+            Continue to Data Hub
           </Button>
         </div>
       </div>

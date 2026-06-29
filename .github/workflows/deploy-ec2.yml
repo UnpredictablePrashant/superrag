@@ -84,9 +84,6 @@ jobs:
     needs: build-and-push
 
     steps:
-      - name: Checkout deployment files
-        uses: actions/checkout@v4
-
       - name: Create app directory
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -96,19 +93,20 @@ jobs:
           port: ${{ env.EC2_PORT }}
           script: |
             set -eu
-            sudo mkdir -p "${{ env.EC2_APP_DIR }}"
-            sudo chown "${USER}:${USER}" "${{ env.EC2_APP_DIR }}"
-
-      - name: Copy Compose file
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ env.EC2_HOST }}
-          username: ${{ env.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: ${{ env.EC2_PORT }}
-          source: deploy/ec2/docker-compose.ec2.yml
-          target: ${{ env.EC2_APP_DIR }}
-          strip_components: 2
+            app_dir="${{ env.EC2_APP_DIR }}"
+            case "${app_dir}" in
+              "~")
+                app_dir="${HOME}"
+                ;;
+              "~/"*)
+                app_dir="${HOME}/${app_dir#~/}"
+                ;;
+            esac
+            echo "Using app directory: ${app_dir}"
+            if ! mkdir -p "${app_dir}" 2>/dev/null; then
+              sudo mkdir -p "${app_dir}"
+              sudo chown "${USER}:${USER}" "${app_dir}"
+            fi
 
       - name: Configure Nginx reverse proxy
         uses: appleboy/ssh-action@v1.0.3
@@ -334,7 +332,18 @@ jobs:
           script: |
             set -eu
 
-            cd "${{ env.EC2_APP_DIR }}"
+            app_dir="${{ env.EC2_APP_DIR }}"
+            case "${app_dir}" in
+              "~")
+                app_dir="${HOME}"
+                ;;
+              "~/"*)
+                app_dir="${HOME}/${app_dir#~/}"
+                ;;
+            esac
+
+            echo "Using app directory: ${app_dir}"
+            cd "${app_dir}"
 
             if [ -n "${GHCR_TOKEN:-}" ]; then
               echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
@@ -399,12 +408,96 @@ jobs:
             chmod 600 .env
 
             if [ ! -s .env ]; then
-              echo "Missing ${{ env.EC2_APP_DIR }}/.env."
+              echo "Missing ${app_dir}/.env."
               exit 1
             fi
 
             export API_IMAGE
             export WEB_IMAGE
+
+            cat > docker-compose.ec2.yml <<'COMPOSE'
+            services:
+              postgres:
+                image: pgvector/pgvector:pg16
+                restart: unless-stopped
+                environment:
+                  POSTGRES_USER: ${POSTGRES_USER:-rag}
+                  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+                  POSTGRES_DB: ${POSTGRES_DB:-rag_console}
+                volumes:
+                  - postgres-data:/var/lib/postgresql/data
+                healthcheck:
+                  test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-rag} -d $${POSTGRES_DB:-rag_console}"]
+                  interval: 10s
+                  timeout: 5s
+                  retries: 5
+
+              redis:
+                image: redis:7-alpine
+                restart: unless-stopped
+                command: redis-server --appendonly yes
+                volumes:
+                  - redis-data:/data
+                healthcheck:
+                  test: ["CMD", "redis-cli", "ping"]
+                  interval: 10s
+                  timeout: 3s
+                  retries: 5
+
+              api:
+                image: ${API_IMAGE:?Set API_IMAGE from the deploy workflow}
+                restart: unless-stopped
+                env_file:
+                  - .env
+                environment:
+                  DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+                  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+                ports:
+                  - "127.0.0.1:${API_PORT:-8000}:8000"
+                depends_on:
+                  postgres:
+                    condition: service_healthy
+                  redis:
+                    condition: service_healthy
+                healthcheck:
+                  test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+                  interval: 30s
+                  timeout: 5s
+                  retries: 3
+                  start_period: 30s
+
+              worker:
+                image: ${API_IMAGE:?Set API_IMAGE from the deploy workflow}
+                restart: unless-stopped
+                command: celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --include=app.workers.tasks
+                env_file:
+                  - .env
+                environment:
+                  DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+                  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+                depends_on:
+                  postgres:
+                    condition: service_healthy
+                  redis:
+                    condition: service_healthy
+                  api:
+                    condition: service_started
+
+              web:
+                image: ${WEB_IMAGE:?Set WEB_IMAGE from the deploy workflow}
+                restart: unless-stopped
+                environment:
+                  NODE_ENV: production
+                ports:
+                  - "127.0.0.1:${WEB_PORT:-3000}:3000"
+                depends_on:
+                  api:
+                    condition: service_started
+
+            volumes:
+              postgres-data:
+              redis-data:
+            COMPOSE
 
             docker compose -f docker-compose.ec2.yml pull
             docker compose -f docker-compose.ec2.yml up -d --remove-orphans

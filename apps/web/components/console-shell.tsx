@@ -27,7 +27,7 @@ const nav = [
   { href: "/ingestion", label: "Ingestion", icon: UploadCloud },
   { href: "/pipeline", label: "Pipeline", icon: FileStack },
   { href: "/chat", label: "Chat", icon: MessageSquare },
-  { href: "/docs", label: "Docs", icon: BookOpenText },
+  { href: "/help", label: "Docs", icon: BookOpenText },
   { href: "/team", label: "Team", icon: Users },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

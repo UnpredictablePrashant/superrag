@@ -69,14 +69,14 @@ export default function DashboardPage() {
           <h3 className="font-semibold text-zinc-950">Docs</h3>
         </div>
         <div className="grid gap-3 md:grid-cols-2">
-          <Link href="/docs#telegram" className="rounded-md border border-zinc-200 p-4 hover:bg-zinc-50">
+          <Link href="/help#telegram" className="rounded-md border border-zinc-200 p-4 hover:bg-zinc-50">
             <div className="flex items-center gap-2">
               <Bot className="h-4 w-4 text-sky-700" aria-hidden />
               <p className="font-medium text-zinc-950">Telegram setup</p>
             </div>
             <p className="mt-2 text-sm text-zinc-500">Connect a Telegram bot, register the webhook, and allow users.</p>
           </Link>
-          <Link href="/docs#mcp" className="rounded-md border border-zinc-200 p-4 hover:bg-zinc-50">
+          <Link href="/help#mcp" className="rounded-md border border-zinc-200 p-4 hover:bg-zinc-50">
             <div className="flex items-center gap-2">
               <Plug className="h-4 w-4 text-emerald-700" aria-hidden />
               <p className="font-medium text-zinc-950">MCP connectors</p>

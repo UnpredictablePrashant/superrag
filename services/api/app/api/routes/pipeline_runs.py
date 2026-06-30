@@ -152,11 +152,31 @@ def retry_pipeline_run(
     db: Session = Depends(get_db),
 ) -> PipelineRunOut:
     run = _get_run(db, ctx.organization_id, pipeline_run_id)
+    docs = list(
+        db.scalars(
+            select(PipelineRunDocument).where(PipelineRunDocument.pipeline_run_id == run.id)
+        )
+    )
     run.retry_count += 1
     run.current_stage = PipelineStage.QUEUED
     run.progress_percentage = 0
+    run.processed_count = 0
     run.errors = []
+    run.warnings = []
     run.cancelled_at = None
+    run.completed_at = None
+    run.actual_completion_seconds = None
+    run.estimated_completion_seconds = max(30, run.total_count * 15)
+    run.estimated_completion_confidence = "Low"
+    run.current_item = None
+    for run_doc in docs:
+        run_doc.status = PipelineStage.QUEUED
+        run_doc.progress_percentage = 0
+        run_doc.error = None
+        run_doc.warnings = []
+        document = db.get(Document, run_doc.document_id)
+        if document and document.organization_id == ctx.organization_id:
+            document.processing_status = DocumentStatus.QUEUED
     db.commit()
     process_pipeline_run_task.delay(str(run.id))
     return _run_out(db, run)

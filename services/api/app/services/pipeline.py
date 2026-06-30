@@ -82,23 +82,29 @@ def process_pipeline_run(db: Session, pipeline_run_id: UUID) -> None:
             db.commit()
 
     failed = any(doc.status == PipelineStage.FAILED for doc in run_docs)
+    awaiting_review = any(doc.status == PipelineStage.AWAITING_REVIEW for doc in run_docs)
     if _is_embedding_backfill(run) and not failed and run.embedding_profile_id:
         kb = db.get(KnowledgeBase, run.knowledge_base_id)
         if kb and kb.organization_id == run.organization_id:
             kb.default_embedding_profile_id = run.embedding_profile_id
-    warning_count = sum(len(doc.warnings or []) for doc in run_docs)
-    run.current_stage = PipelineStage.COMPLETED_WITH_WARNINGS if failed or warning_count else PipelineStage.COMPLETED
-    run.progress_percentage = 100
-    run.completed_at = datetime.now(UTC)
+    run.warnings = _document_warnings(run_docs)
+    run.current_stage = _terminal_stage(run_docs)
+    if not awaiting_review:
+        run.progress_percentage = 100
+        run.completed_at = datetime.now(UTC)
+    else:
+        run.progress_percentage = min(run.progress_percentage, 95)
+        run.estimated_completion_seconds = None
+        run.estimated_completion_confidence = "Paused"
     run.actual_completion_seconds = int(time.perf_counter() - start)
     db.add(
         Notification(
             organization_id=run.organization_id,
             user_id=None,
-            kind="pipeline_completed" if not failed else "pipeline_failed",
-            title="Pipeline completed" if not failed else "Pipeline completed with failures",
-            body=f"Processed {run.processed_count}/{run.total_count} document(s).",
-            severity="success" if not failed else "warning",
+            kind=_notification_kind(run.current_stage),
+            title=_notification_title(run.current_stage),
+            body=_notification_body(run, run_docs),
+            severity="success" if run.current_stage == PipelineStage.COMPLETED else "warning",
             metadata_json={"pipeline_run_id": str(run.id)},
         )
     )
@@ -156,7 +162,11 @@ def _process_document(db: Session, run: PipelineRun, run_doc: PipelineRunDocumen
             summary=quality.summary,
         )
     )
-    if quality.requires_review and cleanup_profile.pause_on_quality_issues:
+    if (
+        quality.requires_review
+        and cleanup_profile.pause_on_quality_issues
+        and not _has_quality_review_override(document)
+    ):
         run_doc.status = PipelineStage.AWAITING_REVIEW
         run_doc.warnings = quality.issues
         document.processing_status = DocumentStatus.AWAITING_REVIEW
@@ -407,6 +417,71 @@ def _finish_cancelled(db: Session, run: PipelineRun) -> None:
     run.current_stage = PipelineStage.CANCELLED
     run.completed_at = datetime.now(UTC)
     db.commit()
+
+
+def _has_quality_review_override(document: Document) -> bool:
+    override = (document.custom_metadata or {}).get("quality_review_override")
+    if not isinstance(override, dict):
+        return False
+    if override.get("version_number") != document.version_number:
+        return False
+    return not document.checksum or override.get("checksum") == document.checksum
+
+
+def _terminal_stage(run_docs: list[PipelineRunDocument]) -> PipelineStage:
+    if any(doc.status == PipelineStage.AWAITING_REVIEW for doc in run_docs):
+        return PipelineStage.AWAITING_REVIEW
+    if any(doc.status == PipelineStage.FAILED for doc in run_docs):
+        return PipelineStage.COMPLETED_WITH_WARNINGS
+    if any(doc.warnings for doc in run_docs):
+        return PipelineStage.COMPLETED_WITH_WARNINGS
+    return PipelineStage.COMPLETED
+
+
+def _document_warnings(run_docs: list[PipelineRunDocument]) -> list[dict]:
+    warnings = []
+    for doc in run_docs:
+        doc_warnings = doc.warnings or []
+        if doc.status == PipelineStage.AWAITING_REVIEW and not doc_warnings:
+            doc_warnings = [
+                {
+                    "code": "awaiting_review",
+                    "severity": "warning",
+                    "message": "Document requires review before indexing.",
+                }
+            ]
+        for warning in doc_warnings:
+            warnings.append(
+                {
+                    "document_id": str(doc.document_id),
+                    "status": doc.status.value,
+                    **warning,
+                }
+            )
+    return warnings
+
+
+def _notification_kind(stage: PipelineStage) -> str:
+    if stage == PipelineStage.AWAITING_REVIEW:
+        return "pipeline_awaiting_review"
+    if stage == PipelineStage.COMPLETED_WITH_WARNINGS:
+        return "pipeline_completed_with_warnings"
+    return "pipeline_completed"
+
+
+def _notification_title(stage: PipelineStage) -> str:
+    if stage == PipelineStage.AWAITING_REVIEW:
+        return "Pipeline awaiting review"
+    if stage == PipelineStage.COMPLETED_WITH_WARNINGS:
+        return "Pipeline completed with warnings"
+    return "Pipeline completed"
+
+
+def _notification_body(run: PipelineRun, run_docs: list[PipelineRunDocument]) -> str:
+    awaiting_review = sum(1 for doc in run_docs if doc.status == PipelineStage.AWAITING_REVIEW)
+    if awaiting_review:
+        return f"{awaiting_review} document(s) need review before indexing can continue."
+    return f"Processed {run.processed_count}/{run.total_count} document(s)."
 
 
 def _get_cleanup_profile(db: Session, profile_id: UUID | None, org_id: UUID) -> CleanupProfile:

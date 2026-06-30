@@ -14,6 +14,7 @@ from app.core.security import decode_session_token, hash_secret
 from app.db.session import get_db
 from app.models.entities import Organization, OrganizationMember, User
 from app.models.entities import Session as UserSession
+from app.services.invitations import find_active_membership
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,11 @@ def get_auth_context(
                 OrganizationMember.status == "active",
             )
         )
+        if membership:
+            organization = db.get(Organization, membership.organization_id)
+            role = membership.role.value
+    if not organization:
+        membership = find_active_membership(db, user.id)
         if membership:
             organization = db.get(Organization, membership.organization_id)
             role = membership.role.value

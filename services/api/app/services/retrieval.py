@@ -193,7 +193,10 @@ def _access_clause() -> str:
 
 
 def _base_where(knowledge_base_ids: list[str] | None, filters: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    clauses = ["d.deleted_at IS NULL"]
+    clauses = [
+        "d.deleted_at IS NULL",
+        "d.processing_status IN ('COMPLETED', 'COMPLETED_WITH_WARNINGS')",
+    ]
     params: dict[str, Any] = {}
     if knowledge_base_ids:
         clauses.append("CAST(c.knowledge_base_id AS text) = ANY(:knowledge_base_ids)")

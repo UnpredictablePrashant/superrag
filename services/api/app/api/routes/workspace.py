@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import AuthContext, require_organization
 from app.db.session import get_db
 from app.models.entities import (
+    Chunk,
     ConnectorConnection,
     ConnectorRun,
     Document,
@@ -16,11 +17,11 @@ from app.models.entities import (
     KnowledgeBase,
     ModelProfile,
     Organization,
-    ProviderConnection,
-    ProviderKind,
     PipelineRun,
     PipelineStage,
     ProfileKind,
+    ProviderConnection,
+    ProviderKind,
     TelegramMessageLog,
 )
 from app.schemas.api import OrganizationOut, WorkspaceSummaryOut
@@ -44,7 +45,9 @@ def workspace_summary(
     )
     indexed_document_count = _count(
         db,
-        select(func.count(Document.id)).where(
+        select(func.count(func.distinct(Document.id)))
+        .join(Chunk, Chunk.document_id == Document.id)
+        .where(
             Document.organization_id == ctx.organization_id,
             Document.deleted_at.is_(None),
             Document.processing_status.in_(

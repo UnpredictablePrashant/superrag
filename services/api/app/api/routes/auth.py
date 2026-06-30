@@ -21,7 +21,6 @@ from app.db.session import get_db
 from app.models.entities import (
     MemberRole,
     Organization,
-    OrganizationInvitation,
     OrganizationMember,
     OTPCode,
     User,
@@ -31,6 +30,7 @@ from app.models.entities import (
 )
 from app.schemas.api import AuthResponse, RequestOTPIn, UserOut, VerifyOTPIn
 from app.services.email import send_otp_email
+from app.services.invitations import accept_organization_invitation, find_active_membership
 from app.services.profiles import ensure_default_profiles
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -95,14 +95,12 @@ def verify_otp(
     user.is_email_verified = True
     user.last_login_at = utcnow()
 
+    membership = None
     if payload.invitation_token:
-        _accept_invitation(db, payload.invitation_token, user)
+        membership = accept_organization_invitation(db, payload.invitation_token, user)
 
-    membership = db.scalar(
-        select(OrganizationMember)
-        .where(OrganizationMember.user_id == user.id, OrganizationMember.status == "active")
-        .order_by(OrganizationMember.created_at)
-    )
+    if not membership:
+        membership = find_active_membership(db, user.id)
     if not membership and payload.organization_name:
         organization = _create_organization(db, payload.organization_name, user.id)
         membership = OrganizationMember(
@@ -113,7 +111,11 @@ def verify_otp(
         db.flush()
 
     organization = db.get(Organization, membership.organization_id) if membership else None
-    token = create_session_token(user.id, organization.id if organization else None, membership.role.value if membership else None)
+    token = create_session_token(
+        user.id,
+        organization.id if organization else None,
+        membership.role.value if membership else None,
+    )
     db.add(
         UserSession(
             user_id=user.id,
@@ -180,34 +182,6 @@ def _create_organization(db: Session, name: str, owner_id: UUID) -> Organization
     db.add(organization)
     db.flush()
     return organization
-
-
-def _accept_invitation(db: Session, token: str, user: User) -> None:
-    invitation = db.scalar(
-        select(OrganizationInvitation).where(OrganizationInvitation.token_hash == hash_secret(token))
-    )
-    if not invitation or invitation.accepted_at:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invitation is invalid or already accepted.")
-    if invitation.expires_at.replace(tzinfo=UTC) < utcnow():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invitation has expired.")
-    if invitation.email.lower() != user.email.lower():
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invitation email does not match this account.")
-    existing = db.scalar(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == invitation.organization_id,
-            OrganizationMember.user_id == user.id,
-        )
-    )
-    if not existing:
-        db.add(
-            OrganizationMember(
-                organization_id=invitation.organization_id,
-                user_id=user.id,
-                role=invitation.role,
-                status="active",
-            )
-        )
-    invitation.accepted_at = utcnow()
 
 
 def _slugify(value: str) -> str:

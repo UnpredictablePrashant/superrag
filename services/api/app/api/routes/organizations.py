@@ -39,6 +39,7 @@ from app.schemas.api import (
 )
 from app.services.audit import write_audit_log
 from app.services.email import send_invitation_email
+from app.services.invitations import accept_organization_invitation
 from app.services.profiles import ensure_default_profiles
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
@@ -178,35 +179,16 @@ def create_invitation(
 @router.post("/invitations/{token}/accept")
 def accept_invitation(
     token: str,
+    request: Request,
+    response: Response,
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> dict:
-    invitation = db.scalar(
-        select(OrganizationInvitation).where(OrganizationInvitation.token_hash == hash_secret(token))
-    )
-    if not invitation or invitation.accepted_at:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invitation is invalid or already accepted.")
-    if invitation.email.lower() != ctx.user.email.lower():
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invitation email does not match this account.")
-    existing = db.scalar(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == invitation.organization_id,
-            OrganizationMember.user_id == ctx.user.id,
-        )
-    )
-    if not existing:
-        db.add(
-            OrganizationMember(
-                organization_id=invitation.organization_id,
-                user_id=ctx.user.id,
-                role=invitation.role,
-                status="active",
-            )
-        )
-    invitation.accepted_at = utcnow()
+    membership = accept_organization_invitation(db, token, ctx.user)
+    organization = db.get(Organization, membership.organization_id)
     db.add(
         Notification(
-            organization_id=invitation.organization_id,
+            organization_id=membership.organization_id,
             user_id=None,
             kind="team_member_joined",
             title="Team member joined",
@@ -215,8 +197,29 @@ def accept_invitation(
             metadata_json={"user_id": str(ctx.user.id)},
         )
     )
+    session_token = create_session_token(ctx.user.id, membership.organization_id, membership.role.value)
+    db.add(
+        UserSession(
+            user_id=ctx.user.id,
+            organization_id=membership.organization_id,
+            token_hash=hash_secret(session_token),
+            expires_at=utcnow() + timedelta(minutes=settings.session_ttl_minutes),
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+    )
+    ctx.session.revoked_at = utcnow()
     db.commit()
-    return {"message": "Invitation accepted."}
+    response.set_cookie(
+        settings.session_cookie_name,
+        session_token,
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="lax",
+        max_age=settings.session_ttl_minutes * 60,
+        path="/",
+    )
+    return {"message": "Invitation accepted.", "organization": OrganizationOut.model_validate(organization)}
 
 
 @router.get("/members", response_model=list[MemberOut])

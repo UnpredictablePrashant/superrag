@@ -207,7 +207,9 @@ def review_action(
             )
         )
         document.processing_status = DocumentStatus.UPLOADED
+        _record_quality_review_override(document, payload.action, ctx.user.id)
     else:
+        _record_quality_review_override(document, payload.action, ctx.user.id)
         document.processing_status = DocumentStatus.UPLOADED
     db.commit()
     return {"message": "Review action recorded.", "document_status": document.processing_status.value}
@@ -251,6 +253,19 @@ def _latest_version_id(db: Session, document_id: UUID) -> UUID:
     if not version_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document version not found.")
     return version_id
+
+
+def _record_quality_review_override(document: Document, action: str, user_id: UUID) -> None:
+    document.custom_metadata = {
+        **(document.custom_metadata or {}),
+        "quality_review_override": {
+            "action": action,
+            "approved_at": datetime.now(UTC).isoformat(),
+            "approved_by_user_id": str(user_id),
+            "version_number": document.version_number,
+            "checksum": document.checksum,
+        },
+    }
 
 
 def _read_upload_bytes(file: UploadFile) -> bytes:

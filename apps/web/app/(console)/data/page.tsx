@@ -8,8 +8,11 @@ import {
   ConnectorConnection,
   ConnectorItem,
   ConnectorRun,
+  createPipelineRun,
+  deleteDocument,
   getCompanyProfile,
   getDocumentQualityReport,
+  getTelegramIntegration,
   getWorkspaceSummary,
   listCompanyProfiles,
   listConnectorItems,
@@ -17,9 +20,19 @@ import {
   listConnectors,
   listDocuments,
   listKnowledgeBases,
+  listMembers,
   listPipelineRuns,
   listProfiles,
+  previewDocument,
+  replaceDocumentFile,
+  listTelegramAllowedUsers,
+  listTelegramMessages,
   reviewDocument,
+  TelegramAllowedUser,
+  TelegramIntegration,
+  TelegramMessageLog,
+  updateDocument,
+  uploadDocument,
 } from "@/lib/api";
 import { formatBytes, shortDate } from "@/lib/format";
 import type { Confidentiality, DocumentRecord, KnowledgeBase, PipelineRun } from "@rag-console/shared-types";
@@ -27,18 +40,23 @@ import { Badge, Button, Input, Label, Panel, Select, Textarea } from "@rag-conso
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
+  Bot,
   Building2,
   Check,
   Database,
+  Eye,
+  FileUp,
   FileText,
   Globe,
   History,
+  Pencil,
   Play,
   Plug,
   RefreshCw,
   RotateCw,
   Save,
   Search,
+  Trash2,
   UploadCloud,
   X,
 } from "lucide-react";
@@ -47,16 +65,13 @@ import * as React from "react";
 
 const DEFAULT_MCP_CONFIG = `{
   "mcpServers": {
-    "awslabs.aws-api-mcp-server": {
-      "command": "uvx",
-      "args": [
-        "awslabs.aws-api-mcp-server@latest"
-      ],
-      "env": {
-        "AWS_REGION": "us-east-1"
+    "n8n-mcp": {
+      "type": "http",
+      "url": "https://your-workspace.app.n8n.cloud/mcp-server/http",
+      "headers": {
+        "Authorization": "Bearer <token>"
       },
-      "disabled": false,
-      "autoApprove": []
+      "disabled": false
     }
   }
 }`;
@@ -108,11 +123,45 @@ export default function DataHubPage() {
     setError("");
     setNotice("");
     try {
-      const result = await api<{ status: string; message?: string }>(`/connectors/${connection.id}/test`, { method: "POST" });
-      setNotice(result.status === "ok" ? "Connector test passed." : result.message ?? "Connector test failed.");
+      const result = await api<{ status: string; message?: string; tools?: McpToolSummary[] }>(`/connectors/${connection.id}/test`, { method: "POST" });
+      setNotice(result.status === "ok" ? `Connector test passed. Detected ${result.tools?.length ?? 0} tool(s).` : result.message ?? "Connector test failed.");
       queryClient.invalidateQueries({ queryKey: ["connectors"] });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Connector test failed.");
+    }
+  }
+
+  async function toggleConnector(connection: ConnectorConnection) {
+    setError("");
+    setNotice("");
+    try {
+      await api(`/connectors/${connection.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_enabled: !connection.is_enabled }),
+      });
+      setNotice(connection.is_enabled ? "Source paused." : "Source enabled.");
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+      queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update source.");
+    }
+  }
+
+  async function toggleTool(connection: ConnectorConnection, toolName: string) {
+    setError("");
+    setNotice("");
+    try {
+      const disabled = stringList(connection.config.disabled_tool_names);
+      const nextDisabled = disabled.includes(toolName)
+        ? disabled.filter((name) => name !== toolName)
+        : [...disabled, toolName];
+      await api(`/connectors/${connection.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ config: { ...connection.config, disabled_tool_names: nextDisabled } }),
+      });
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update tool.");
     }
   }
 
@@ -199,7 +248,6 @@ export default function DataHubPage() {
           knowledgeBases={kbs.data ?? []}
           selectedKbId={selectedKbId}
           setSelectedKbId={setSelectedKbId}
-          profiles={profiles.data}
           onError={setError}
           onNotice={setNotice}
         />
@@ -209,15 +257,30 @@ export default function DataHubPage() {
           setActiveConnectionId={setActiveConnectionId}
           onTest={testConnector}
           onSync={syncConnector}
+          onToggle={toggleConnector}
+          onToggleTool={toggleTool}
         />
       </div>
+
+      <TelegramSourcePanel
+        knowledgeBases={kbs.data ?? []}
+        selectedKbId={selectedKbId}
+        profiles={profiles.data}
+        onError={setError}
+        onNotice={setNotice}
+      />
 
       {activeConnection ? (
         <ConnectorDetailPanel connection={activeConnection} runs={connectorRuns.data ?? []} items={connectorItems.data ?? []} />
       ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[1fr_0.95fr]">
-        <KnowledgePanel docs={allDocs} kbs={kbs.data ?? []} selectedKbId={selectedKbId} setSelectedKbId={setSelectedKbId} />
+        <KnowledgePanel
+          docs={allDocs}
+          kbs={kbs.data ?? []}
+          selectedKbId={selectedKbId}
+          setSelectedKbId={setSelectedKbId}
+        />
         <ReviewPanel
           documents={reviewDocs}
           pipelines={pipelineAttention}
@@ -242,14 +305,12 @@ function SourceBuilder({
   knowledgeBases,
   selectedKbId,
   setSelectedKbId,
-  profiles,
   onError,
   onNotice,
 }: {
   knowledgeBases: KnowledgeBase[];
   selectedKbId: string;
   setSelectedKbId: (value: string) => void;
-  profiles?: Awaited<ReturnType<typeof listProfiles>>;
   onError: (value: string) => void;
   onNotice: (value: string) => void;
 }) {
@@ -258,22 +319,12 @@ function SourceBuilder({
   const [files, setFiles] = React.useState<File[]>([]);
   const [tags, setTags] = React.useState("default");
   const [confidentiality, setConfidentiality] = React.useState<Confidentiality>("Internal");
-  const [cleanupProfileId, setCleanupProfileId] = React.useState("");
-  const [chunkingProfileId, setChunkingProfileId] = React.useState("");
-  const [embeddingProfileId, setEmbeddingProfileId] = React.useState("");
   const [connectorName, setConnectorName] = React.useState("");
   const [seedUrls, setSeedUrls] = React.useState("");
   const [allowlist, setAllowlist] = React.useState("");
   const [companyName, setCompanyName] = React.useState("");
   const [mcpConfig, setMcpConfig] = React.useState(DEFAULT_MCP_CONFIG);
-  const [enabledToolNames, setEnabledToolNames] = React.useState("");
   const [isBusy, setIsBusy] = React.useState(false);
-
-  React.useEffect(() => {
-    if (!cleanupProfileId && profiles?.cleanup_profiles[1]) setCleanupProfileId(profiles.cleanup_profiles[1].id);
-    if (!chunkingProfileId && profiles?.chunking_profiles[0]) setChunkingProfileId(profiles.chunking_profiles[0].id);
-    if (!embeddingProfileId && profiles?.embedding_profiles[0]) setEmbeddingProfileId(profiles.embedding_profiles[0].id);
-  }, [cleanupProfileId, chunkingProfileId, embeddingProfileId, profiles]);
 
   async function uploadAndIndex() {
     if (!selectedKbId || !files.length) return;
@@ -283,58 +334,21 @@ function SourceBuilder({
     try {
       const uploaded: DocumentRecord[] = [];
       for (const file of files) {
-        const presign = await api<{
-          document_id: string;
-          upload_url: string;
-          headers: Record<string, string>;
-          multipart: boolean;
-          upload_id?: string;
-          part_urls?: Array<{ part_number: number; url: string }>;
-        }>("/uploads/presign", {
-          method: "POST",
-          body: JSON.stringify({
-            filename: file.name,
-            content_type: file.type || "application/octet-stream",
-            size_bytes: file.size,
+        uploaded.push(
+          await uploadDocument(file, {
             knowledge_base_id: selectedKbId,
             tags: splitList(tags),
             confidentiality,
           }),
-        });
-        if (presign.multipart && presign.part_urls?.length) {
-          const parts = [];
-          const partSize = Math.ceil(file.size / presign.part_urls.length);
-          for (const part of presign.part_urls) {
-            const start = (part.part_number - 1) * partSize;
-            const end = Math.min(file.size, start + partSize);
-            const response = await fetch(part.url, { method: "PUT", body: file.slice(start, end) });
-            if (!response.ok) throw new Error(`Part ${part.part_number} upload failed.`);
-            parts.push({ PartNumber: part.part_number, ETag: response.headers.get("ETag")?.replaceAll("\"", "") });
-          }
-          await api("/uploads/complete", {
-            method: "POST",
-            body: JSON.stringify({ document_id: presign.document_id, upload_id: presign.upload_id, parts }),
-          });
-        } else {
-          const response = await fetch(presign.upload_url, { method: "PUT", body: file, headers: presign.headers });
-          if (!response.ok) throw new Error(`Upload failed for ${file.name}.`);
-          await api("/uploads/complete", { method: "POST", body: JSON.stringify({ document_id: presign.document_id }) });
-        }
-        uploaded.push(await api<DocumentRecord>(`/documents/${presign.document_id}`));
+        );
       }
-      const run = await api<PipelineRun>("/pipeline-runs", {
-        method: "POST",
-        body: JSON.stringify({
-          knowledge_base_id: selectedKbId,
-          document_ids: uploaded.map((doc) => doc.id),
-          cleanup_profile_id: cleanupProfileId || undefined,
-          chunking_profile_id: chunkingProfileId || undefined,
-          embedding_profile_id: embeddingProfileId || undefined,
-          retrieval_index_config: { max_chunks: 8, rrf_constant: 60 },
-        }),
+      const run = await createPipelineRun({
+        knowledge_base_id: selectedKbId,
+        document_ids: uploaded.map((doc) => doc.id),
+        retrieval_index_config: { source: "data_hub_upload", reindex_strategy: "full_replace_chunks_and_vectors" },
       });
       setFiles([]);
-      onNotice(`Uploaded ${uploaded.length} file(s). Pipeline ${run.current_stage} has started.`);
+      onNotice(`Uploaded ${uploaded.length} file(s). RAG pipeline queued with ${run.total_count} document(s).`);
       queryClient.invalidateQueries({ queryKey: ["documents"] });
       queryClient.invalidateQueries({ queryKey: ["pipeline-runs"] });
       queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
@@ -351,7 +365,7 @@ function SourceBuilder({
     setIsBusy(true);
     try {
       const kind = sourceType === "web" ? "web" : "mcp";
-      const enabledTools = splitList(enabledToolNames);
+      const parsedMcpConfig = kind === "mcp" ? parseMcpConfig(mcpConfig) : {};
       const config =
         kind === "web"
           ? {
@@ -362,10 +376,9 @@ function SourceBuilder({
               tags: splitList(tags),
             }
           : {
-              transport: "stdio",
-              ...parseMcpConfig(mcpConfig),
-              enabled_tool_names: enabledTools,
-              tool_tags: Object.fromEntries(enabledTools.map((tool) => [tool, ["web_search", "knowledge_lookup"]])),
+              ...parsedMcpConfig,
+              transport: inferMcpTransport(parsedMcpConfig, "stdio"),
+              disabled_tool_names: [],
             };
       const connection = await api<ConnectorConnection>("/connectors", {
         method: "POST",
@@ -373,6 +386,7 @@ function SourceBuilder({
           kind,
           scope: "organization",
           name: connectorName || (kind === "web" ? "Company website" : mcpServerName(config) ?? "MCP tools"),
+          base_url: kind === "mcp" ? mcpBaseUrl(config) || undefined : undefined,
           is_enabled: true,
           config,
         }),
@@ -382,9 +396,7 @@ function SourceBuilder({
           method: "POST",
           body: JSON.stringify({
             knowledge_base_id: selectedKbId,
-            cleanup_profile_id: cleanupProfileId || undefined,
-            chunking_profile_id: chunkingProfileId || undefined,
-            embedding_profile_id: embeddingProfileId || undefined,
+            retrieval_index_config: { source: "data_hub_connector_sync", reindex_strategy: "connector_incremental_then_index" },
             share_with_organization: true,
             options: { company_name: companyName || undefined },
           }),
@@ -454,9 +466,6 @@ function SourceBuilder({
           <Label>Tags</Label>
           <Input value={tags} onChange={(event) => setTags(event.target.value)} />
         </div>
-        <ProfileSelect label="Cleanup" value={cleanupProfileId} onChange={setCleanupProfileId} options={profiles?.cleanup_profiles ?? []} />
-        <ProfileSelect label="Chunking" value={chunkingProfileId} onChange={setChunkingProfileId} options={profiles?.chunking_profiles ?? []} />
-        <ProfileSelect label="Embedding" value={embeddingProfileId} onChange={setEmbeddingProfileId} options={profiles?.embedding_profiles ?? []} />
       </div>
       {sourceType === "files" ? (
         <div className="mt-4 space-y-3">
@@ -473,7 +482,7 @@ function SourceBuilder({
           ))}
           <Button disabled={!selectedKbId || !files.length || isBusy} onClick={uploadAndIndex}>
             <Play className="h-4 w-4" aria-hidden />
-            Upload and index
+            Upload files and start RAG pipeline
           </Button>
         </div>
       ) : null}
@@ -508,10 +517,6 @@ function SourceBuilder({
               <Label>Connector name</Label>
               <Input value={connectorName} onChange={(event) => setConnectorName(event.target.value)} />
             </div>
-            <div className="space-y-2">
-              <Label>Enabled tool names</Label>
-              <Input value={enabledToolNames} onChange={(event) => setEnabledToolNames(event.target.value)} placeholder="search,lookup" />
-            </div>
           </div>
           <div className="space-y-2">
             <Label>Cursor MCP JSON</Label>
@@ -533,12 +538,16 @@ function SourcesPanel({
   setActiveConnectionId,
   onTest,
   onSync,
+  onToggle,
+  onToggleTool,
 }: {
   connectors: ConnectorConnection[];
   activeConnectionId: string;
   setActiveConnectionId: (id: string) => void;
   onTest: (connection: ConnectorConnection) => void;
   onSync: (connection: ConnectorConnection) => void;
+  onToggle: (connection: ConnectorConnection) => void;
+  onToggleTool: (connection: ConnectorConnection, toolName: string) => void;
 }) {
   return (
     <Panel className="p-5">
@@ -561,6 +570,7 @@ function SourcesPanel({
                   {connection.live_tools_supported ? <Badge tone="blue">Live tools</Badge> : null}
                   {connection.web_search_supported ? <Badge tone="amber">Web mode</Badge> : null}
                 </div>
+                {connection.kind === "mcp" ? <SourceToolToggles connection={connection} onToggleTool={onToggleTool} /> : null}
               </div>
               <Button variant="ghost" size="icon" onClick={() => setActiveConnectionId(activeConnectionId === connection.id ? "" : connection.id)}>
                 <History className="h-4 w-4" aria-hidden />
@@ -570,6 +580,9 @@ function SourcesPanel({
               <Button variant="secondary" onClick={() => onTest(connection)}>
                 <RotateCw className="h-4 w-4" aria-hidden />
                 Test
+              </Button>
+              <Button variant="secondary" onClick={() => onToggle(connection)}>
+                {connection.is_enabled ? "Pause" : "Enable"}
               </Button>
               {connection.sync_supported ? (
                 <Button variant="secondary" onClick={() => onSync(connection)}>
@@ -583,6 +596,293 @@ function SourcesPanel({
         {!connectors.length ? <EmptyState icon={Plug} title="No sources connected" body="Add files, a website, or an MCP connector to make company data queryable." /> : null}
       </div>
     </Panel>
+  );
+}
+
+function TelegramSourcePanel({
+  knowledgeBases,
+  selectedKbId,
+  profiles,
+  onError,
+  onNotice,
+}: {
+  knowledgeBases: KnowledgeBase[];
+  selectedKbId: string;
+  profiles?: Awaited<ReturnType<typeof listProfiles>>;
+  onError: (value: string) => void;
+  onNotice: (value: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const integration = useQuery({ queryKey: ["telegram-integration"], queryFn: getTelegramIntegration });
+  const allowedUsers = useQuery({ queryKey: ["telegram-allowed-users"], queryFn: listTelegramAllowedUsers });
+  const messages = useQuery({ queryKey: ["telegram-messages"], queryFn: listTelegramMessages, refetchInterval: 5000 });
+  const members = useQuery({ queryKey: ["members"], queryFn: listMembers });
+  const [botToken, setBotToken] = React.useState("");
+  const [botUsername, setBotUsername] = React.useState("");
+  const [defaultKbId, setDefaultKbId] = React.useState("");
+  const [chatProfileId, setChatProfileId] = React.useState("");
+  const [enabled, setEnabled] = React.useState(false);
+  const [autoText, setAutoText] = React.useState(true);
+  const [autoDocs, setAutoDocs] = React.useState(true);
+  const [autoVoice, setAutoVoice] = React.useState(true);
+  const [userDraft, setUserDraft] = React.useState({
+    username: "",
+    telegram_user_id: "",
+    phone_number: "",
+    display_name: "",
+    user_id: "",
+    can_ingest: true,
+    can_query: true,
+  });
+
+  React.useEffect(() => {
+    const data = integration.data;
+    if (!data) return;
+    setBotUsername(data.bot_username ?? "");
+    setDefaultKbId(data.default_knowledge_base_id ?? selectedKbId);
+    setChatProfileId(data.default_chat_model_profile_id ?? "");
+    setEnabled(data.is_enabled);
+    setAutoText(data.auto_ingest_text);
+    setAutoDocs(data.auto_ingest_documents);
+    setAutoVoice(data.auto_ingest_voice);
+  }, [integration.data, selectedKbId]);
+
+  async function saveIntegration() {
+    onError("");
+    onNotice("");
+    try {
+      await api<TelegramIntegration>("/integrations/telegram", {
+        method: "PATCH",
+        body: JSON.stringify({
+          bot_token: botToken || undefined,
+          bot_username: botUsername || undefined,
+          default_knowledge_base_id: defaultKbId || selectedKbId || undefined,
+          default_chat_model_profile_id: chatProfileId || undefined,
+          auto_ingest_text: autoText,
+          auto_ingest_documents: autoDocs,
+          auto_ingest_voice: autoVoice,
+          is_enabled: enabled,
+        }),
+      });
+      setBotToken("");
+      onNotice("Telegram bot settings saved.");
+      queryClient.invalidateQueries({ queryKey: ["telegram-integration"] });
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not save Telegram settings.");
+    }
+  }
+
+  async function testBot() {
+    onError("");
+    onNotice("");
+    try {
+      const result = await api<{ bot: { username?: string } }>("/integrations/telegram/test", { method: "POST" });
+      onNotice(`Connected to @${result.bot.username ?? "telegram bot"}.`);
+      queryClient.invalidateQueries({ queryKey: ["telegram-integration"] });
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Telegram bot test failed.");
+    }
+  }
+
+  async function registerWebhook() {
+    onError("");
+    onNotice("");
+    try {
+      await api("/integrations/telegram/register-webhook", { method: "POST" });
+      onNotice("Telegram webhook registered.");
+      queryClient.invalidateQueries({ queryKey: ["telegram-integration"] });
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not register webhook.");
+    }
+  }
+
+  async function addAllowedUser() {
+    onError("");
+    try {
+      await api<TelegramAllowedUser>("/integrations/telegram/allowed-users", {
+        method: "POST",
+        body: JSON.stringify({
+          username: userDraft.username || undefined,
+          telegram_user_id: userDraft.telegram_user_id ? Number(userDraft.telegram_user_id) : undefined,
+          phone_number: userDraft.phone_number || undefined,
+          display_name: userDraft.display_name || undefined,
+          user_id: userDraft.user_id || undefined,
+          can_ingest: userDraft.can_ingest,
+          can_query: userDraft.can_query,
+        }),
+      });
+      setUserDraft({
+        username: "",
+        telegram_user_id: "",
+        phone_number: "",
+        display_name: "",
+        user_id: "",
+        can_ingest: true,
+        can_query: true,
+      });
+      queryClient.invalidateQueries({ queryKey: ["telegram-allowed-users"] });
+      onNotice("Telegram user allowed.");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not add Telegram user.");
+    }
+  }
+
+  async function removeAllowedUser(user: TelegramAllowedUser) {
+    await api(`/integrations/telegram/allowed-users/${user.id}`, { method: "DELETE" });
+    queryClient.invalidateQueries({ queryKey: ["telegram-allowed-users"] });
+  }
+
+  return (
+    <Panel className="p-5">
+      <div className="flex items-center gap-2">
+        <Bot className="h-5 w-5 text-sky-700" aria-hidden />
+        <h3 className="font-semibold text-zinc-950">Telegram source</h3>
+        {integration.data?.is_enabled ? <Badge tone="green">Enabled</Badge> : <Badge>Paused</Badge>}
+      </div>
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <div className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Bot token</Label>
+              <Input type="password" value={botToken} onChange={(event) => setBotToken(event.target.value)} placeholder={integration.data?.masked_bot_token ?? ""} />
+            </div>
+            <div className="space-y-2">
+              <Label>Bot username</Label>
+              <Input value={botUsername} onChange={(event) => setBotUsername(event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Default knowledge base</Label>
+              <Select value={defaultKbId || selectedKbId} onChange={(event) => setDefaultKbId(event.target.value)}>
+                <option value="">Select knowledge base</option>
+                {knowledgeBases.map((kb) => (
+                  <option key={kb.id} value={kb.id}>
+                    {kb.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Answer model</Label>
+              <Select value={chatProfileId} onChange={(event) => setChatProfileId(event.target.value)}>
+                <option value="">Local fallback</option>
+                {(profiles?.chat_profiles ?? []).map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.provider} / {profile.model_name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-3 rounded-md bg-zinc-50 p-3">
+              <Toggle label="Enabled" checked={enabled} onChange={setEnabled} />
+              <Toggle label="Ingest text" checked={autoText} onChange={setAutoText} />
+              <Toggle label="Ingest documents" checked={autoDocs} onChange={setAutoDocs} />
+              <Toggle label="Ingest voice" checked={autoVoice} onChange={setAutoVoice} />
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={saveIntegration}>
+              <Save className="h-4 w-4" aria-hidden />
+              Save Telegram
+            </Button>
+            <Button variant="secondary" onClick={testBot}>
+              <RotateCw className="h-4 w-4" aria-hidden />
+              Test bot
+            </Button>
+            <Button variant="secondary" onClick={registerWebhook}>
+              <Plug className="h-4 w-4" aria-hidden />
+              Register webhook
+            </Button>
+          </div>
+          {integration.data ? (
+            <div className="rounded-md bg-zinc-50 p-3 text-sm text-zinc-600">
+              <p className="break-all">{integration.data.webhook_url}</p>
+              <p className="mt-1 break-all">Secret: {integration.data.webhook_secret_token}</p>
+            </div>
+          ) : null}
+        </div>
+        <div className="space-y-4">
+          <div className="rounded-md border border-zinc-200 p-4">
+            <h4 className="font-semibold text-zinc-950">Allowed users</h4>
+            <div className="mt-3 grid gap-2">
+              <Input value={userDraft.username} onChange={(event) => setUserDraft({ ...userDraft, username: event.target.value })} placeholder="@username" />
+              <Input value={userDraft.telegram_user_id} onChange={(event) => setUserDraft({ ...userDraft, telegram_user_id: event.target.value })} placeholder="Telegram user ID" />
+              <Input value={userDraft.display_name} onChange={(event) => setUserDraft({ ...userDraft, display_name: event.target.value })} placeholder="Display name" />
+              <Select value={userDraft.user_id} onChange={(event) => setUserDraft({ ...userDraft, user_id: event.target.value })}>
+                <option value="">Link RAG account for Ask</option>
+                {(members.data ?? []).map((member) => (
+                  <option key={member.id} value={member.user_id}>
+                    {member.email}
+                  </option>
+                ))}
+              </Select>
+              <div className="flex flex-wrap gap-3">
+                <Toggle label="Can ingest" checked={userDraft.can_ingest} onChange={(value) => setUserDraft({ ...userDraft, can_ingest: value })} />
+                <Toggle label="Can ask" checked={userDraft.can_query} onChange={(value) => setUserDraft({ ...userDraft, can_query: value })} />
+              </div>
+              <Button disabled={!userDraft.username && !userDraft.telegram_user_id && !userDraft.phone_number} onClick={addAllowedUser}>
+                <Check className="h-4 w-4" aria-hidden />
+                Allow user
+              </Button>
+            </div>
+            <div className="mt-4 divide-y divide-zinc-100">
+              {(allowedUsers.data ?? []).map((user) => (
+                <div key={user.id} className="flex items-center justify-between gap-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-zinc-950">{user.display_name || user.username || user.telegram_user_id}</p>
+                    <div className="mt-1 flex gap-2">
+                      {user.can_ingest ? <Badge tone="green">Ingest</Badge> : null}
+                      {user.can_query ? <Badge tone="blue">Ask</Badge> : null}
+                      {user.user_id ? <Badge>Linked</Badge> : null}
+                    </div>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={() => removeAllowedUser(user)}>
+                    <X className="h-4 w-4" aria-hidden />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <TelegramMessages messages={messages.data ?? []} />
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function TelegramMessages({ messages }: { messages: TelegramMessageLog[] }) {
+  return (
+    <div className="rounded-md border border-zinc-200 p-4">
+      <h4 className="font-semibold text-zinc-950">Recent Telegram messages</h4>
+      <div className="mt-3 max-h-80 divide-y divide-zinc-100 overflow-auto">
+        {messages.map((message) => (
+          <div key={message.id} className="py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-zinc-950">
+                  {message.mode} / {message.source_type}
+                </p>
+                <p className="text-xs text-zinc-500">
+                  chat {message.telegram_chat_id} / message {message.telegram_message_id}
+                </p>
+              </div>
+              <StatusBadge status={message.status} />
+            </div>
+            {message.error ? <p className="mt-2 text-sm text-rose-700">{message.error}</p> : null}
+            <p className="mt-1 text-xs text-zinc-500">{shortDate(message.created_at)}</p>
+          </div>
+        ))}
+        {!messages.length ? <p className="text-sm text-zinc-500">No Telegram messages received yet.</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-sm text-zinc-700">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      {label}
+    </label>
   );
 }
 
@@ -635,47 +935,298 @@ function KnowledgePanel({
   selectedKbId: string;
   setSelectedKbId: (value: string) => void;
 }) {
+  const queryClient = useQueryClient();
+  const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
+  const [previewDocId, setPreviewDocId] = React.useState("");
+  const [previewKind, setPreviewKind] = React.useState("cleaned");
+  const [editingDocId, setEditingDocId] = React.useState("");
+  const [editName, setEditName] = React.useState("");
+  const [editTags, setEditTags] = React.useState("");
+  const [editBusinessUnit, setEditBusinessUnit] = React.useState("");
+  const [editConfidentiality, setEditConfidentiality] = React.useState<Confidentiality>("Internal");
+  const [busyAction, setBusyAction] = React.useState("");
+  const [panelError, setPanelError] = React.useState("");
+  const [panelNotice, setPanelNotice] = React.useState("");
+
+  React.useEffect(() => {
+    setSelectedIds((current) => current.filter((id) => docs.some((doc) => doc.id === id)));
+  }, [docs]);
+
+  const preview = useQuery({
+    queryKey: ["document-preview", previewDocId, previewKind],
+    enabled: Boolean(previewDocId),
+    queryFn: () => previewDocument(previewDocId, previewKind),
+  });
+  const previewDoc = docs.find((doc) => doc.id === previewDocId);
+  const editingDoc = docs.find((doc) => doc.id === editingDocId);
+  const selectedDocs = docs.filter((doc) => selectedIds.includes(doc.id));
+  const allVisibleSelected = docs.length > 0 && docs.every((doc) => selectedIds.includes(doc.id));
+
+  function toggleSelected(id: string) {
+    setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  }
+
+  function editDocument(doc: DocumentRecord) {
+    setEditingDocId(doc.id);
+    setEditName(doc.name);
+    setEditTags(doc.tags.join(", "));
+    setEditBusinessUnit(doc.business_unit ?? "");
+    setEditConfidentiality(doc.confidentiality);
+  }
+
+  async function queueReindex(targetDocs: DocumentRecord[]) {
+    setPanelError("");
+    setPanelNotice("");
+    if (!targetDocs.length) {
+      setPanelError("Select at least one document to reindex.");
+      return;
+    }
+    const targetKbId = selectedKbId || targetDocs[0]?.knowledge_base_id;
+    if (!targetKbId || targetDocs.some((doc) => doc.knowledge_base_id !== targetKbId)) {
+      setPanelError("Reindex documents from one knowledge base at a time.");
+      return;
+    }
+    setBusyAction("reindex");
+    try {
+      const run = await createPipelineRun({
+        knowledge_base_id: targetKbId,
+        document_ids: targetDocs.map((doc) => doc.id),
+        retrieval_index_config: { source: "data_hub_reindex", reindex_strategy: "full_replace_chunks_and_vectors" },
+      });
+      setPanelNotice(`RAG pipeline queued for ${run.total_count} document(s).`);
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      queryClient.invalidateQueries({ queryKey: ["pipeline-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
+    } catch (err) {
+      setPanelError(err instanceof Error ? err.message : "Could not start the RAG pipeline.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function saveMetadata(reindex: boolean) {
+    if (!editingDoc) return;
+    setPanelError("");
+    setPanelNotice("");
+    setBusyAction("metadata");
+    try {
+      const updated = await updateDocument(editingDoc.id, {
+        name: editName,
+        tags: splitList(editTags),
+        business_unit: editBusinessUnit,
+        confidentiality: editConfidentiality,
+      });
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      if (reindex) {
+        await queueReindex([updated]);
+      } else {
+        setPanelNotice("Document metadata saved.");
+      }
+    } catch (err) {
+      setPanelError(err instanceof Error ? err.message : "Could not save document metadata.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function removeDocument(doc: DocumentRecord) {
+    if (!window.confirm(`Delete ${doc.name}? It will be removed from Ask results.`)) return;
+    setPanelError("");
+    setPanelNotice("");
+    setBusyAction(`delete-${doc.id}`);
+    try {
+      await deleteDocument(doc.id);
+      setSelectedIds((current) => current.filter((id) => id !== doc.id));
+      if (previewDocId === doc.id) setPreviewDocId("");
+      if (editingDocId === doc.id) setEditingDocId("");
+      setPanelNotice("Document deleted.");
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
+    } catch (err) {
+      setPanelError(err instanceof Error ? err.message : "Could not delete document.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function replaceFile(doc: DocumentRecord, file?: File) {
+    if (!file) return;
+    setPanelError("");
+    setPanelNotice("");
+    setBusyAction(`replace-${doc.id}`);
+    try {
+      const updated = await replaceDocumentFile(doc.id, file);
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      await queueReindex([updated]);
+      setPanelNotice(`Replaced ${doc.name} and queued reindexing.`);
+    } catch (err) {
+      setPanelError(err instanceof Error ? err.message : "Could not replace document.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   return (
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
-        <h3 className="font-semibold text-zinc-950">Company data</h3>
-        <Select className="max-w-64" value={selectedKbId} onChange={(event) => setSelectedKbId(event.target.value)}>
-          <option value="">All knowledge bases</option>
-          {kbs.map((kb) => (
-            <option key={kb.id} value={kb.id}>
-              {kb.name}
-            </option>
-          ))}
-        </Select>
+        <div>
+          <h3 className="font-semibold text-zinc-950">Company data</h3>
+          <p className="mt-1 text-xs text-zinc-500">{selectedIds.length} selected for reindexing</p>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="secondary" disabled={!selectedIds.length || busyAction === "reindex"} onClick={() => queueReindex(selectedDocs)}>
+            <RefreshCw className="h-4 w-4" aria-hidden />
+            Start RAG pipeline
+          </Button>
+          <Select className="max-w-64" value={selectedKbId} onChange={(event) => setSelectedKbId(event.target.value)}>
+            <option value="">All knowledge bases</option>
+            {kbs.map((kb) => (
+              <option key={kb.id} value={kb.id}>
+                {kb.name}
+              </option>
+            ))}
+          </Select>
+        </div>
       </div>
+      {panelError ? <div className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">{panelError}</div> : null}
+      {panelNotice ? <div className="border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800">{panelNotice}</div> : null}
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-zinc-200 text-sm">
           <thead className="bg-zinc-50 text-left text-xs font-semibold uppercase text-zinc-500">
             <tr>
+              <th className="w-10 px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={(event) => setSelectedIds(event.target.checked ? docs.map((doc) => doc.id) : [])}
+                />
+              </th>
               <th className="px-4 py-3">Document</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Security</th>
               <th className="px-4 py-3">Updated</th>
+              <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100 bg-white">
-            {docs.slice(0, 12).map((doc) => (
+            {docs.map((doc) => (
               <tr key={doc.id}>
                 <td className="px-4 py-3">
+                  <input type="checkbox" checked={selectedIds.includes(doc.id)} onChange={() => toggleSelected(doc.id)} />
+                </td>
+                <td className="px-4 py-3">
                   <p className="font-medium text-zinc-950">{doc.name}</p>
-                  <p className="text-xs text-zinc-500">{doc.source_url ?? doc.original_filename}</p>
+                  <p className="text-xs text-zinc-500">
+                    v{doc.version_number} / {formatBytes(doc.file_size)} / {doc.source_url ?? doc.original_filename}
+                  </p>
                 </td>
                 <td className="px-4 py-3">
                   <StatusBadge status={doc.processing_status} />
                 </td>
                 <td className="px-4 py-3">{doc.confidentiality}</td>
                 <td className="px-4 py-3 text-zinc-600">{shortDate(doc.updated_at)}</td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="ghost" size="icon" title="Preview" onClick={() => setPreviewDocId(doc.id)}>
+                      <Eye className="h-4 w-4" aria-hidden />
+                    </Button>
+                    <Button variant="ghost" size="icon" title="Edit metadata" onClick={() => editDocument(doc)}>
+                      <Pencil className="h-4 w-4" aria-hidden />
+                    </Button>
+                    <label
+                      className={`inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-md text-zinc-700 hover:bg-zinc-100 ${
+                        busyAction === `replace-${doc.id}` ? "opacity-50" : ""
+                      }`}
+                      title="Replace file"
+                    >
+                      <FileUp className="h-4 w-4" aria-hidden />
+                      <input
+                        className="sr-only"
+                        type="file"
+                        onChange={(event) => {
+                          void replaceFile(doc, event.target.files?.[0]);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                    <Button variant="ghost" size="icon" title="Reindex" onClick={() => queueReindex([doc])}>
+                      <RefreshCw className="h-4 w-4" aria-hidden />
+                    </Button>
+                    <Button variant="ghost" size="icon" title="Delete" onClick={() => removeDocument(doc)}>
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </Button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       {!docs.length ? <EmptyState icon={FileText} title="No documents yet" body="Add a source to create indexed company data." /> : null}
+      {(previewDoc || editingDoc) && docs.length ? (
+        <div className="grid gap-4 border-t border-zinc-200 bg-white p-4 xl:grid-cols-2">
+          {previewDoc ? (
+            <div className="rounded-md border border-zinc-200 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="font-semibold text-zinc-950">{previewDoc.name}</h4>
+                  <p className="mt-1 text-xs text-zinc-500">Preview derived content from the latest pipeline run.</p>
+                </div>
+                <Select className="w-36" value={previewKind} onChange={(event) => setPreviewKind(event.target.value)}>
+                  <option value="cleaned">Cleaned</option>
+                  <option value="redacted">Redacted</option>
+                  <option value="extracted">Extracted</option>
+                  <option value="manual_edit">Manual edit</option>
+                </Select>
+              </div>
+              <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-zinc-950 p-3 text-xs leading-5 text-zinc-100">
+                {preview.isLoading ? "Loading preview..." : preview.data?.text || "No derived preview yet. Start the RAG pipeline to extract and clean this file."}
+              </pre>
+            </div>
+          ) : null}
+          {editingDoc ? (
+            <div className="rounded-md border border-zinc-200 p-4">
+              <h4 className="font-semibold text-zinc-950">Edit document</h4>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Name</Label>
+                  <Input value={editName} onChange={(event) => setEditName(event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Tags</Label>
+                  <Input value={editTags} onChange={(event) => setEditTags(event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Business unit</Label>
+                  <Input value={editBusinessUnit} onChange={(event) => setEditBusinessUnit(event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Confidentiality</Label>
+                  <Select value={editConfidentiality} onChange={(event) => setEditConfidentiality(event.target.value as Confidentiality)}>
+                    {["Public", "Internal", "Confidential", "Restricted"].map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </Select>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button variant="secondary" disabled={busyAction === "metadata"} onClick={() => saveMetadata(false)}>
+                  <Save className="h-4 w-4" aria-hidden />
+                  Save metadata
+                </Button>
+                <Button disabled={busyAction === "metadata" || busyAction === "reindex"} onClick={() => saveMetadata(true)}>
+                  <RefreshCw className="h-4 w-4" aria-hidden />
+                  Save and reindex
+                </Button>
+                <Button variant="ghost" onClick={() => setEditingDocId("")}>
+                  <X className="h-4 w-4" aria-hidden />
+                  Close
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </Panel>
   );
 }
@@ -817,30 +1368,51 @@ function HubStat({ label, value, icon: Icon }: { label: string; value: number; i
   );
 }
 
-function ProfileSelect({
-  label,
-  value,
-  onChange,
-  options,
+interface McpToolSummary {
+  name: string;
+  description?: string;
+}
+
+function SourceToolToggles({
+  connection,
+  onToggleTool,
 }: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: Array<{ id: string; name: string }>;
+  connection: ConnectorConnection;
+  onToggleTool: (connection: ConnectorConnection, toolName: string) => void;
 }) {
+  const tools = toolsForConnection(connection);
+  if (!tools.length) return null;
+  const disabled = stringList(connection.config.disabled_tool_names);
   return (
-    <div className="space-y-2">
-      <Label>{label}</Label>
-      <Select value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value="">Default</option>
-        {options.map((profile) => (
-          <option key={profile.id} value={profile.id}>
-            {profile.name}
-          </option>
-        ))}
-      </Select>
+    <div className="mt-3 space-y-2 rounded-md border border-zinc-200 p-3">
+      <p className="text-xs font-medium uppercase text-zinc-500">Detected tools</p>
+      {tools.map((tool) => {
+        const active = !disabled.includes(tool.name);
+        return (
+          <label key={tool.name} className="flex items-start justify-between gap-3 text-sm text-zinc-700">
+            <span>
+              <span className="block font-medium text-zinc-900">{tool.name}</span>
+              {tool.description ? <span className="block text-xs text-zinc-500">{tool.description}</span> : null}
+            </span>
+            <input type="checkbox" checked={active} onChange={() => onToggleTool(connection, tool.name)} />
+          </label>
+        );
+      })}
     </div>
   );
+}
+
+function toolsForConnection(connection: ConnectorConnection): McpToolSummary[] {
+  const cached = connection.config.discovered_tools;
+  if (!Array.isArray(cached)) return [];
+  return cached
+    .filter((tool): tool is Record<string, unknown> => Boolean(tool) && typeof tool === "object" && !Array.isArray(tool))
+    .map((tool) => ({ name: String(tool.name ?? ""), description: String(tool.description ?? "") }))
+    .filter((tool) => tool.name);
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
 }
 
 function splitList(value: string) {
@@ -868,6 +1440,35 @@ function mcpServerName(config: Record<string, unknown>) {
   for (const [name, value] of Object.entries(servers)) {
     if (value && typeof value === "object" && !Array.isArray(value) && (value as { disabled?: unknown }).disabled !== true) {
       return name;
+    }
+  }
+  return null;
+}
+
+function inferMcpTransport(config: Record<string, unknown>, fallback: string) {
+  const server = firstMcpServer(config);
+  if (server && (String(server.type ?? "").toLowerCase() === "http" || typeof server.url === "string")) {
+    return "streamable_http";
+  }
+  return fallback;
+}
+
+function mcpBaseUrl(config: Record<string, unknown>) {
+  const server = firstMcpServer(config);
+  return typeof server?.url === "string" ? server.url : null;
+}
+
+function firstMcpServer(config: Record<string, unknown>) {
+  const servers = config.mcpServers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return null;
+  const selectedName = config.mcp_server_name ?? config.server_name;
+  if (typeof selectedName === "string") {
+    const selected = (servers as Record<string, unknown>)[selectedName];
+    return selected && typeof selected === "object" && !Array.isArray(selected) ? (selected as Record<string, unknown>) : null;
+  }
+  for (const value of Object.values(servers)) {
+    if (value && typeof value === "object" && !Array.isArray(value) && (value as { disabled?: unknown }).disabled !== true) {
+      return value as Record<string, unknown>;
     }
   }
   return null;

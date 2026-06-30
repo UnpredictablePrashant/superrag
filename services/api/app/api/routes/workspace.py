@@ -19,6 +19,7 @@ from app.models.entities import (
     PipelineRun,
     PipelineStage,
     ProfileKind,
+    TelegramMessageLog,
 )
 from app.schemas.api import OrganizationOut, WorkspaceSummaryOut
 from app.services.connectors import connector_capability_metadata
@@ -86,6 +87,13 @@ def workspace_summary(
             PipelineRun.current_stage == PipelineStage.FAILED,
         ),
     )
+    failed_telegram_count = _count(
+        db,
+        select(func.count(TelegramMessageLog.id)).where(
+            TelegramMessageLog.organization_id == ctx.organization_id,
+            TelegramMessageLog.status == "failed",
+        ),
+    )
     review_document_count = _count(
         db,
         select(func.count(Document.id)).where(
@@ -106,6 +114,10 @@ def workspace_summary(
             ModelProfile.organization_id == ctx.organization_id,
             ModelProfile.kind == ProfileKind.CHAT,
             ModelProfile.deleted_at.is_(None),
+            ~(
+                (ModelProfile.provider_connection_id.is_(None))
+                & (ModelProfile.model_name == "deterministic-local-384")
+            ),
         )
         .order_by(ModelProfile.is_default.desc(), ModelProfile.created_at)
         .limit(1)
@@ -118,7 +130,11 @@ def workspace_summary(
         knowledge_base_count=knowledge_base_count,
         active_source_count=len(active_connectors),
         failed_sync_count=failed_sync_count + failed_connector_count,
-        review_item_count=review_document_count + failed_pipeline_count + failed_sync_count + failed_connector_count,
+        review_item_count=review_document_count
+        + failed_pipeline_count
+        + failed_sync_count
+        + failed_connector_count
+        + failed_telegram_count,
         available_answer_modes=available_modes,
         default_knowledge_base=_knowledge_base_summary(default_kb),
         default_chat_model=_chat_model_summary(default_chat_model),
@@ -126,6 +142,7 @@ def workspace_summary(
             "active": len(active_connectors),
             "error": failed_connector_count,
             "sync_failed": failed_sync_count,
+            "telegram_failed": failed_telegram_count,
             "indexed_items": sum(int(meta["indexed_item_count"]) for meta in connector_metadata),
         },
     )
@@ -154,7 +171,7 @@ def _knowledge_base_summary(kb: KnowledgeBase | None) -> dict[str, Any] | None:
 
 def _chat_model_summary(profile: ModelProfile | None) -> dict[str, Any] | None:
     if not profile:
-        return {"id": None, "name": "Local fallback", "provider": "Local", "model_name": "deterministic-local-384"}
+        return {"id": None, "name": "No chat model configured", "provider": "LLM", "model_name": "not configured"}
     return {
         "id": str(profile.id),
         "name": profile.name,

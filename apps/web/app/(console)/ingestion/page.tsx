@@ -3,9 +3,9 @@
 import { EmptyState } from "@/components/empty-state";
 import { ErrorBox } from "@/components/error-box";
 import { StatusBadge } from "@/components/status-badge";
-import { api, Category, ConnectorConnection, listConnectors, listDocuments, listKnowledgeBases } from "@/lib/api";
+import { api, Category, ConnectorConnection, listConnectors, listDocuments, listKnowledgeBases, uploadDocument } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import type { DocumentRecord, KnowledgeBase, PipelineRun } from "@rag-console/shared-types";
+import type { Confidentiality, DocumentRecord, KnowledgeBase, PipelineRun } from "@rag-console/shared-types";
 import { Badge, Button, Input, Label, Panel, Select } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Check, Cloud, FileText, FolderPlus, Globe, HardDrive, Mail, Play, Plug, UploadCloud } from "lucide-react";
@@ -34,7 +34,7 @@ export default function IngestionPage() {
   const [newCategory, setNewCategory] = React.useState("");
   const [tags, setTags] = React.useState("default");
   const [businessUnit, setBusinessUnit] = React.useState("");
-  const [confidentiality, setConfidentiality] = React.useState("Internal");
+  const [confidentiality, setConfidentiality] = React.useState<Confidentiality>("Internal");
   const [cleanupProfileId, setCleanupProfileId] = React.useState("");
   const [chunkingProfileId, setChunkingProfileId] = React.useState("");
   const [embeddingProfileId, setEmbeddingProfileId] = React.useState("");
@@ -89,49 +89,13 @@ export default function IngestionPage() {
     try {
       const uploaded: DocumentRecord[] = [];
       for (const file of files) {
-        const presign = await api<{
-          document_id: string;
-          upload_url: string;
-          headers: Record<string, string>;
-          multipart: boolean;
-          upload_id?: string;
-          part_urls?: Array<{ part_number: number; url: string }>;
-        }>("/uploads/presign", {
-          method: "POST",
-          body: JSON.stringify({
-            filename: file.name,
-            content_type: file.type || "application/octet-stream",
-            size_bytes: file.size,
-            knowledge_base_id: knowledgeBaseId,
-            category_id: categoryId || undefined,
-            tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
-            business_unit: businessUnit || undefined,
-            confidentiality,
-          }),
+        const document = await uploadDocument(file, {
+          knowledge_base_id: knowledgeBaseId,
+          category_id: categoryId || undefined,
+          tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+          business_unit: businessUnit || undefined,
+          confidentiality,
         });
-        if (presign.multipart && presign.part_urls?.length) {
-          const parts = [];
-          const partSize = Math.ceil(file.size / presign.part_urls.length);
-          for (const part of presign.part_urls) {
-            const start = (part.part_number - 1) * partSize;
-            const end = Math.min(file.size, start + partSize);
-            const response = await fetch(part.url, { method: "PUT", body: file.slice(start, end) });
-            if (!response.ok) throw new Error(`Part ${part.part_number} upload failed.`);
-            parts.push({ PartNumber: part.part_number, ETag: response.headers.get("ETag")?.replaceAll("\"", "") });
-          }
-          await api("/uploads/complete", {
-            method: "POST",
-            body: JSON.stringify({ document_id: presign.document_id, upload_id: presign.upload_id, parts }),
-          });
-        } else {
-          const response = await fetch(presign.upload_url, { method: "PUT", body: file, headers: presign.headers });
-          if (!response.ok) throw new Error(`Upload failed for ${file.name}.`);
-          await api("/uploads/complete", {
-            method: "POST",
-            body: JSON.stringify({ document_id: presign.document_id }),
-          });
-        }
-        const document = await api<DocumentRecord>(`/documents/${presign.document_id}`);
         uploaded.push(document);
       }
       setUploadedDocs(uploaded);
@@ -481,8 +445,8 @@ function OrganizeStep(props: {
   setTags: (value: string) => void;
   businessUnit: string;
   setBusinessUnit: (value: string) => void;
-  confidentiality: string;
-  setConfidentiality: (value: string) => void;
+  confidentiality: Confidentiality;
+  setConfidentiality: (value: Confidentiality) => void;
 }) {
   return (
     <div className="space-y-5">
@@ -531,7 +495,7 @@ function OrganizeStep(props: {
         </div>
         <div className="space-y-2">
           <Label>Confidentiality</Label>
-          <Select value={props.confidentiality} onChange={(event) => props.setConfidentiality(event.target.value)}>
+          <Select value={props.confidentiality} onChange={(event) => props.setConfidentiality(event.target.value as Confidentiality)}>
             {["Public", "Internal", "Confidential", "Restricted"].map((value) => (
               <option key={value}>{value}</option>
             ))}

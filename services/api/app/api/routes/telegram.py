@@ -12,17 +12,19 @@ from app.api.deps import AuthContext, capability
 from app.core.config import settings
 from app.core.security import encrypt_secret, mask_secret
 from app.db.session import get_db
-from app.models.entities import TelegramAllowedUser, TelegramIntegration
+from app.models.entities import TelegramAllowedUser, TelegramIntegration, TelegramMessageLog
 from app.schemas.api import (
     TelegramAllowedUserCreateIn,
     TelegramAllowedUserOut,
     TelegramAllowedUserPatchIn,
     TelegramIntegrationOut,
     TelegramIntegrationPatchIn,
+    TelegramMessageLogOut,
 )
 from app.services.telegram import (
     build_webhook_url,
     process_telegram_update,
+    record_telegram_update_receipt,
     register_telegram_webhook,
     test_telegram_bot,
 )
@@ -177,6 +179,22 @@ def delete_allowed_user(
     return {"message": "Telegram user removed."}
 
 
+@router.get("/messages", response_model=list[TelegramMessageLogOut])
+def list_messages(
+    ctx: AuthContext = Depends(capability("manage_settings")),
+    db: Session = Depends(get_db),
+) -> list[TelegramMessageLog]:
+    integration = _ensure_integration(db, ctx.organization_id)
+    return list(
+        db.scalars(
+            select(TelegramMessageLog)
+            .where(TelegramMessageLog.integration_id == integration.id)
+            .order_by(TelegramMessageLog.created_at.desc())
+            .limit(100)
+        )
+    )
+
+
 @router.post("/webhook/{integration_id}")
 async def telegram_webhook(
     integration_id: UUID,
@@ -193,6 +211,8 @@ async def telegram_webhook(
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid Telegram webhook.")
     payload = await request.json()
+    record_telegram_update_receipt(db, integration, payload)
+    db.commit()
     try:
         process_telegram_update_task.delay(str(integration.id), payload)
     except Exception:

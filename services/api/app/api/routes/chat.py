@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import AuthContext, capability
 from app.core.permissions import require_capability
 from app.db.session import SessionLocal, get_db
-from app.models.entities import ChatMessage, ChatSession, RetrievalEvent
+from app.models.entities import ChatMessage, ChatSession, KnowledgeBase, RetrievalEvent
 from app.schemas.api import (
     ChatMessageCreateIn,
     ChatMessageOut,
@@ -56,12 +56,15 @@ def create_chat_session(
 ) -> ChatSession:
     if payload.model_profile_id:
         resolve_chat_model(db, ctx.organization_id, payload.model_profile_id)
+    retrieval_config = payload.retrieval_config or _default_retrieval_config(
+        db, ctx.organization_id, payload.knowledge_base_ids
+    )
     session = ChatSession(
         organization_id=ctx.organization_id,
         user_id=ctx.user.id,
         title=payload.title,
         knowledge_base_ids=[str(value) for value in payload.knowledge_base_ids],
-        retrieval_config=payload.retrieval_config,
+        retrieval_config=retrieval_config,
         model_profile_id=payload.model_profile_id,
     )
     db.add(session)
@@ -137,7 +140,8 @@ def create_chat_message(
     session = _get_session(db, ctx, chat_session_id)
     answer_mode, use_web_search, use_mcp_tools, indexed_scope = _resolve_answer_mode(payload)
     kb_ids = [str(value) for value in payload.knowledge_base_ids] if payload.knowledge_base_ids else session.knowledge_base_ids
-    filters = {**session.retrieval_config, **payload.filters}
+    session_retrieval_config = session.retrieval_config or _default_retrieval_config(db, ctx.organization_id, kb_ids)
+    filters = {**session_retrieval_config, **payload.filters}
     filters["answer_mode"] = answer_mode
     if use_web_search:
         filters["use_web_search"] = True
@@ -154,17 +158,25 @@ def create_chat_message(
     db.add(user_message)
     db.flush()
     if indexed_scope:
-        candidates, event = retrieve(
-            db,
-            organization_id=ctx.organization_id,
-            user_id=ctx.user.id,
-            role=ctx.role or "",
-            query=payload.content,
-            knowledge_base_ids=kb_ids,
-            filters=filters,
-            debug=payload.debug,
-            chat_session_id=session.id,
-        )
+        try:
+            candidates, event = retrieve(
+                db,
+                organization_id=ctx.organization_id,
+                user_id=ctx.user.id,
+                role=ctx.role or "",
+                query=payload.content,
+                knowledge_base_ids=kb_ids,
+                filters=filters,
+                debug=payload.debug,
+                chat_session_id=session.id,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=f"Retrieval failed before an answer could be generated: {str(exc)[:300]}",
+            ) from exc
     else:
         candidates = []
         event = RetrievalEvent(
@@ -186,16 +198,24 @@ def create_chat_message(
     db.flush()
     if filters.get("use_web_search") or filters.get("use_mcp_tools"):
         require_capability(ctx.role or "", "use_live_tools")
-        live_candidates = live_connector_candidates(
-            db,
-            organization_id=ctx.organization_id,
-            user_id=ctx.user.id,
-            query=payload.content,
-            use_web_search=use_web_search,
-            use_mcp_tools=use_mcp_tools,
-            connector_connection_ids=[str(value) for value in filters.get("connector_connection_ids", [])],
-            chat_session_id=session.id,
-        )
+        try:
+            live_candidates = live_connector_candidates(
+                db,
+                organization_id=ctx.organization_id,
+                user_id=ctx.user.id,
+                query=payload.content,
+                use_web_search=use_web_search,
+                use_mcp_tools=use_mcp_tools,
+                connector_connection_ids=[str(value) for value in filters.get("connector_connection_ids", [])],
+                chat_session_id=session.id,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail=f"Live tool retrieval failed: {str(exc)[:300]}",
+            ) from exc
         candidates = _merge_live_candidates(candidates, live_candidates)
         if live_candidates:
             event.applied_filters = {
@@ -323,3 +343,16 @@ def _get_session(db: Session, ctx: AuthContext, session_id: UUID) -> ChatSession
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat session not found.")
     return session
+
+
+def _default_retrieval_config(db: Session, organization_id: UUID, knowledge_base_ids: list[UUID | str]) -> dict:
+    if not knowledge_base_ids:
+        return {}
+    try:
+        kb_id = UUID(str(knowledge_base_ids[0]))
+    except ValueError:
+        return {}
+    kb = db.get(KnowledgeBase, kb_id)
+    if not kb or kb.organization_id != organization_id or kb.deleted_at is not None:
+        return {}
+    return dict(kb.default_retrieval_config or {})

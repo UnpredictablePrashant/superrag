@@ -27,9 +27,7 @@ const tabs = [
   "Organization",
   "AI Providers",
   "Model Profiles",
-  "Cleanup Profiles",
-  "Chunking Profiles",
-  "Embedding Profiles",
+  "Connectors",
   "Telegram",
   "Notifications",
   "Security",
@@ -38,16 +36,13 @@ const tabs = [
 
 const DEFAULT_MCP_CONFIG = `{
   "mcpServers": {
-    "awslabs.aws-api-mcp-server": {
-      "command": "uvx",
-      "args": [
-        "awslabs.aws-api-mcp-server@latest"
-      ],
-      "env": {
-        "AWS_REGION": "us-east-1"
+    "n8n-mcp": {
+      "type": "http",
+      "url": "https://your-workspace.app.n8n.cloud/mcp-server/http",
+      "headers": {
+        "Authorization": "Bearer <token>"
       },
-      "disabled": false,
-      "autoApprove": []
+      "disabled": false
     }
   }
 }`;
@@ -75,7 +70,8 @@ export default function SettingsPage() {
       </div>
       {tab === "Organization" ? <OrganizationSettings /> : null}
       {tab === "AI Providers" ? <ProviderSettings /> : null}
-      {tab.includes("Profiles") ? <ProfileSettings tab={tab} /> : null}
+      {tab === "Model Profiles" ? <ProfileSettings /> : null}
+      {tab === "Connectors" ? <ConnectorSettings /> : null}
       {tab === "Telegram" ? <TelegramSettings /> : null}
       {tab === "Notifications" ? <Notifications /> : null}
       {tab === "Security" ? <SecuritySettings /> : null}
@@ -251,12 +247,11 @@ function ConnectorSettings() {
   const [seedUrls, setSeedUrls] = React.useState("");
   const [allowlist, setAllowlist] = React.useState("");
   const [companyName, setCompanyName] = React.useState("");
-  const [transport, setTransport] = React.useState("stdio");
   const [mcpConfig, setMcpConfig] = React.useState(DEFAULT_MCP_CONFIG);
-  const [enabledToolNames, setEnabledToolNames] = React.useState("");
   const [syncKbId, setSyncKbId] = React.useState("");
   const [activeConnectionId, setActiveConnectionId] = React.useState("");
   const [enabled, setEnabled] = React.useState(true);
+  const [discoveredTools, setDiscoveredTools] = React.useState<Record<string, McpToolSummary[]>>({});
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
   const runs = useQuery({
@@ -271,7 +266,8 @@ function ConnectorSettings() {
 
   const create = useMutation({
     mutationFn: () => {
-      const enabledTools = splitList(enabledToolNames);
+      const parsedMcpConfig = kind === "mcp" ? parseMcpConfig(mcpConfig) : {};
+      const inferredTransport = kind === "mcp" ? inferMcpTransport(parsedMcpConfig, "stdio") : "streamable_http";
       const config =
         kind === "web"
           ? {
@@ -281,10 +277,9 @@ function ConnectorSettings() {
               max_depth: 0,
             }
           : {
-              transport,
-              ...(transport === "stdio" ? parseMcpConfig(mcpConfig) : {}),
-              enabled_tool_names: enabledTools,
-              tool_tags: Object.fromEntries(enabledTools.map((tool) => [tool, ["web_search", "knowledge_lookup"]])),
+              ...parsedMcpConfig,
+              transport: inferredTransport,
+              disabled_tool_names: [],
             };
       return api("/connectors", {
         method: "POST",
@@ -293,7 +288,7 @@ function ConnectorSettings() {
           scope,
           name: name || (kind === "web" ? "Web sync" : mcpServerName(config) ?? "MCP tools"),
           secret: secret || undefined,
-          base_url: kind === "mcp" && transport === "stdio" ? undefined : baseUrl || undefined,
+          base_url: kind === "mcp" ? mcpBaseUrl(config) || baseUrl || undefined : baseUrl || undefined,
           is_enabled: enabled,
           config,
         }),
@@ -312,8 +307,33 @@ function ConnectorSettings() {
   async function test(connection: ConnectorConnection) {
     setError("");
     setNotice("");
-    const result = await api<{ status: string; message?: string }>(`/connectors/${connection.id}/test`, { method: "POST" });
-    setNotice(result.status === "ok" ? "Connector test passed." : result.message ?? "Connector test failed.");
+    const result = await api<{ status: string; message?: string; tools?: McpToolSummary[] }>(`/connectors/${connection.id}/test`, { method: "POST" });
+    if (result.tools) {
+      setDiscoveredTools((current) => ({ ...current, [connection.id]: result.tools ?? [] }));
+    }
+    setNotice(result.status === "ok" ? `Connector test passed. Detected ${result.tools?.length ?? 0} tool(s).` : result.message ?? "Connector test failed.");
+    queryClient.invalidateQueries({ queryKey: ["connectors"] });
+  }
+
+  async function toggleConnector(connection: ConnectorConnection) {
+    await api(`/connectors/${connection.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_enabled: !connection.is_enabled }),
+    });
+    queryClient.invalidateQueries({ queryKey: ["connectors"] });
+  }
+
+  async function toggleTool(connection: ConnectorConnection, toolName: string) {
+    const disabled = stringList(connection.config.disabled_tool_names);
+    const nextDisabled = disabled.includes(toolName)
+      ? disabled.filter((name) => name !== toolName)
+      : [...disabled, toolName];
+    await api(`/connectors/${connection.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        config: { ...connection.config, disabled_tool_names: nextDisabled },
+      }),
+    });
     queryClient.invalidateQueries({ queryKey: ["connectors"] });
   }
 
@@ -370,12 +390,12 @@ function ConnectorSettings() {
             <Label>Name</Label>
             <Input value={name} onChange={(event) => setName(event.target.value)} />
           </div>
-          {kind === "mcp" && transport === "stdio" ? null : (
+          {kind === "web" ? (
             <div className="space-y-2">
-              <Label>{kind === "mcp" ? "MCP endpoint" : "Base URL"}</Label>
+              <Label>Base URL</Label>
               <Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
             </div>
-          )}
+          ) : null}
           <div className="space-y-2">
             <Label>Secret</Label>
             <Input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} />
@@ -408,28 +428,15 @@ function ConnectorSettings() {
             </>
           ) : (
             <>
-              <div className="space-y-2">
-                <Label>Transport</Label>
-                <Select value={transport} onChange={(event) => setTransport(event.target.value)}>
-                  <option value="streamable_http">Streamable HTTP</option>
-                  <option value="stdio">Stdio</option>
-                </Select>
+              <div className="space-y-2 md:col-span-2">
+                <Label>MCP JSON</Label>
+                <Textarea
+                  className="min-h-64 font-mono text-xs"
+                  value={mcpConfig}
+                  onChange={(event) => setMcpConfig(event.target.value)}
+                  spellCheck={false}
+                />
               </div>
-              <div className="space-y-2">
-                <Label>Enabled tool names</Label>
-                <Input value={enabledToolNames} onChange={(event) => setEnabledToolNames(event.target.value)} placeholder="search,lookup" />
-              </div>
-              {transport === "stdio" ? (
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Cursor MCP JSON</Label>
-                  <Textarea
-                    className="min-h-64 font-mono text-xs"
-                    value={mcpConfig}
-                    onChange={(event) => setMcpConfig(event.target.value)}
-                    spellCheck={false}
-                  />
-                </div>
-              ) : null}
             </>
           )}
           <label className="flex items-center gap-2 text-sm text-zinc-700">
@@ -461,6 +468,9 @@ function ConnectorSettings() {
                     <StatusBadge status={connection.status} />
                     {connection.is_enabled ? <Badge tone="green">Enabled</Badge> : <Badge>Paused</Badge>}
                   </div>
+                  {connection.kind === "mcp" ? (
+                    <ToolToggleList connection={connection} tools={toolsForConnection(connection, discoveredTools[connection.id])} onToggle={toggleTool} />
+                  ) : null}
                 </div>
                 <div className="flex gap-2">
                   <Button variant="ghost" size="icon" onClick={() => setActiveConnectionId(connection.id)}>
@@ -475,6 +485,9 @@ function ConnectorSettings() {
                 <Button variant="secondary" onClick={() => test(connection)}>
                   <RotateCw className="h-4 w-4" aria-hidden />
                   Test
+                </Button>
+                <Button variant="secondary" onClick={() => toggleConnector(connection)}>
+                  {connection.is_enabled ? "Pause" : "Enable"}
                 </Button>
                 <Button variant="secondary" onClick={() => sync(connection)}>
                   <Play className="h-4 w-4" aria-hidden />
@@ -535,29 +548,87 @@ function mcpServerName(config: Record<string, unknown>) {
   return null;
 }
 
-function ProfileSettings({ tab }: { tab: string }) {
-  const profiles = useQuery({ queryKey: ["profiles"], queryFn: listProfiles });
-  if (tab === "Model Profiles") {
-    return <ModelProfileSettings profiles={profiles.data} />;
+interface McpToolSummary {
+  name: string;
+  description?: string;
+}
+
+function inferMcpTransport(config: Record<string, unknown>, fallback: string) {
+  const server = firstMcpServer(config);
+  if (server && (String(server.type ?? "").toLowerCase() === "http" || typeof server.url === "string")) {
+    return "streamable_http";
   }
-  if (tab === "Embedding Profiles") {
-    return <EmbeddingProfileSettings profiles={profiles.data} />;
+  return fallback;
+}
+
+function mcpBaseUrl(config: Record<string, unknown>) {
+  const server = firstMcpServer(config);
+  return typeof server?.url === "string" ? server.url : null;
+}
+
+function firstMcpServer(config: Record<string, unknown>) {
+  const servers = config.mcpServers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return null;
+  const selectedName = config.mcp_server_name ?? config.server_name;
+  if (typeof selectedName === "string") {
+    const selected = (servers as Record<string, unknown>)[selectedName];
+    return selected && typeof selected === "object" && !Array.isArray(selected) ? (selected as Record<string, unknown>) : null;
   }
-  const key =
-    tab === "Cleanup Profiles" ? "cleanup_profiles" : "chunking_profiles";
+  for (const value of Object.values(servers)) {
+    if (value && typeof value === "object" && !Array.isArray(value) && (value as { disabled?: unknown }).disabled !== true) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function toolsForConnection(connection: ConnectorConnection, freshTools?: McpToolSummary[]) {
+  if (freshTools?.length) return freshTools;
+  const cached = connection.config.discovered_tools;
+  if (!Array.isArray(cached)) return [];
+  return cached
+    .filter((tool): tool is Record<string, unknown> => Boolean(tool) && typeof tool === "object" && !Array.isArray(tool))
+    .map((tool) => ({ name: String(tool.name ?? ""), description: String(tool.description ?? "") }))
+    .filter((tool) => tool.name);
+}
+
+function ToolToggleList({
+  connection,
+  tools,
+  onToggle,
+}: {
+  connection: ConnectorConnection;
+  tools: McpToolSummary[];
+  onToggle: (connection: ConnectorConnection, toolName: string) => void;
+}) {
+  if (!tools.length) return null;
+  const disabled = stringList(connection.config.disabled_tool_names);
   return (
-    <Panel className="p-5">
-      <h3 className="font-semibold text-zinc-950">{tab}</h3>
-      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {(profiles.data?.[key] ?? []).map((profile) => (
-          <div key={String(profile.id)} className="rounded-md border border-zinc-200 p-4">
-            <p className="font-medium text-zinc-950">{String(profile.name)}</p>
-            <pre className="mt-2 overflow-auto rounded bg-zinc-50 p-2 text-xs text-zinc-600">{JSON.stringify(profile, null, 2)}</pre>
-          </div>
-        ))}
-      </div>
-    </Panel>
+    <div className="mt-3 space-y-2 rounded-md border border-zinc-200 p-3">
+      <p className="text-xs font-medium uppercase text-zinc-500">Detected tools</p>
+      {tools.map((tool) => {
+        const active = !disabled.includes(tool.name);
+        return (
+          <label key={tool.name} className="flex items-start justify-between gap-3 text-sm text-zinc-700">
+            <span>
+              <span className="block font-medium text-zinc-900">{tool.name}</span>
+              {tool.description ? <span className="block text-xs text-zinc-500">{tool.description}</span> : null}
+            </span>
+            <input type="checkbox" checked={active} onChange={() => onToggle(connection, tool.name)} />
+          </label>
+        );
+      })}
+    </div>
   );
+}
+
+function ProfileSettings() {
+  const profiles = useQuery({ queryKey: ["profiles"], queryFn: listProfiles });
+  return <ModelProfileSettings profiles={profiles.data} />;
 }
 
 function ModelProfileSettings({ profiles }: { profiles?: ProfilesResponse }) {
@@ -624,71 +695,6 @@ function ModelProfileSettings({ profiles }: { profiles?: ProfilesResponse }) {
   );
 }
 
-function EmbeddingProfileSettings({ profiles }: { profiles?: ProfilesResponse }) {
-  const queryClient = useQueryClient();
-  const models = useQuery({ queryKey: ["provider-models"], queryFn: () => listProviderModels() });
-  const embeddingOptions = (models.data ?? []).filter(
-    (option) => option.supports_embeddings && ["Local", "OpenAI"].includes(option.provider),
-  );
-  const [selectedKey, setSelectedKey] = React.useState("");
-  const [name, setName] = React.useState("");
-  const [error, setError] = React.useState("");
-  const selected = embeddingOptions.find((option) => optionKey(option) === selectedKey) ?? embeddingOptions[0];
-  React.useEffect(() => {
-    if (!selectedKey && embeddingOptions[0]) setSelectedKey(optionKey(embeddingOptions[0]));
-  }, [embeddingOptions, selectedKey]);
-  const create = useMutation({
-    mutationFn: () =>
-      api("/profiles/embeddings", {
-        method: "POST",
-        body: JSON.stringify({
-          provider_connection_id: selected?.provider_connection_id || undefined,
-          name: name || `${selected?.provider ?? "Local"} ${selected?.model ?? "embedding"}`,
-          model_name: selected?.model,
-          embedding_dimension: selected?.embedding_dimension ?? 384,
-          batch_size: 64,
-          normalization: "l2",
-          is_active: true,
-          config: { provider: selected?.provider },
-        }),
-      }),
-    onSuccess: () => {
-      setName("");
-      queryClient.invalidateQueries({ queryKey: ["profiles"] });
-    },
-    onError: (err) => setError(err instanceof Error ? err.message : "Could not create embedding profile."),
-  });
-  return (
-    <Panel className="p-5">
-      <h3 className="font-semibold text-zinc-950">Embedding Profiles</h3>
-      <ErrorBox message={error} />
-      <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_auto]">
-        <div className="space-y-2">
-          <Label>Embedding model</Label>
-          <Select value={selectedKey} onChange={(event) => setSelectedKey(event.target.value)}>
-            {embeddingOptions.map((option) => (
-              <option key={optionKey(option)} value={optionKey(option)}>
-                {option.provider} / {option.model} ({option.embedding_dimension ?? "?"}d)
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div className="space-y-2">
-          <Label>Profile name</Label>
-          <Input value={name} onChange={(event) => setName(event.target.value)} />
-        </div>
-        <div className="flex items-end">
-          <Button disabled={!selected || create.isPending} onClick={() => create.mutate()}>
-            <Save className="h-4 w-4" aria-hidden />
-            Create
-          </Button>
-        </div>
-      </div>
-      <ProfileCards profiles={profiles?.embedding_profiles ?? []} />
-    </Panel>
-  );
-}
-
 function ProfileCards({
   profiles,
 }: {
@@ -732,9 +738,6 @@ function TelegramSettings() {
   const [botUsername, setBotUsername] = React.useState("");
   const [defaultKbId, setDefaultKbId] = React.useState("");
   const [chatProfileId, setChatProfileId] = React.useState("");
-  const [cleanupProfileId, setCleanupProfileId] = React.useState("");
-  const [chunkingProfileId, setChunkingProfileId] = React.useState("");
-  const [embeddingProfileId, setEmbeddingProfileId] = React.useState("");
   const [autoText, setAutoText] = React.useState(true);
   const [autoDocs, setAutoDocs] = React.useState(true);
   const [autoVoice, setAutoVoice] = React.useState(true);
@@ -757,9 +760,6 @@ function TelegramSettings() {
     setBotUsername(data.bot_username ?? "");
     setDefaultKbId(data.default_knowledge_base_id ?? "");
     setChatProfileId(data.default_chat_model_profile_id ?? "");
-    setCleanupProfileId(data.default_cleanup_profile_id ?? "");
-    setChunkingProfileId(data.default_chunking_profile_id ?? "");
-    setEmbeddingProfileId(data.default_embedding_profile_id ?? "");
     setAutoText(data.auto_ingest_text);
     setAutoDocs(data.auto_ingest_documents);
     setAutoVoice(data.auto_ingest_voice);
@@ -777,9 +777,6 @@ function TelegramSettings() {
           bot_username: botUsername || undefined,
           default_knowledge_base_id: defaultKbId || undefined,
           default_chat_model_profile_id: chatProfileId || undefined,
-          default_cleanup_profile_id: cleanupProfileId || undefined,
-          default_chunking_profile_id: chunkingProfileId || undefined,
-          default_embedding_profile_id: embeddingProfileId || undefined,
           auto_ingest_text: autoText,
           auto_ingest_documents: autoDocs,
           auto_ingest_voice: autoVoice,
@@ -894,19 +891,6 @@ function TelegramSettings() {
               ))}
             </Select>
           </div>
-          <ProfileSelect label="Cleanup" value={cleanupProfileId} onChange={setCleanupProfileId} options={profiles.data?.cleanup_profiles ?? []} />
-          <ProfileSelect label="Chunking" value={chunkingProfileId} onChange={setChunkingProfileId} options={profiles.data?.chunking_profiles ?? []} />
-          <div className="space-y-2">
-            <Label>Embedding</Label>
-            <Select value={embeddingProfileId} onChange={(event) => setEmbeddingProfileId(event.target.value)}>
-              <option value="">Active embedding profile</option>
-              {(profiles.data?.embedding_profiles ?? []).map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.provider} / {profile.model_name}
-                </option>
-              ))}
-            </Select>
-          </div>
           <div className="space-y-3 rounded-md bg-zinc-50 p-3">
             <label className="flex items-center gap-2 text-sm text-zinc-700">
               <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
@@ -1012,32 +996,6 @@ function TelegramSettings() {
   );
 }
 
-function ProfileSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: Array<{ id: string; name: string }>;
-}) {
-  return (
-    <div className="space-y-2">
-      <Label>{label}</Label>
-      <Select value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value="">Default</option>
-        {options.map((profile) => (
-          <option key={profile.id} value={profile.id}>
-            {profile.name}
-          </option>
-        ))}
-      </Select>
-    </div>
-  );
-}
-
 function Notifications() {
   const notifications = useQuery({ queryKey: ["notifications"], queryFn: () => api<Array<Record<string, unknown>>>("/notifications") });
   return (
@@ -1070,7 +1028,7 @@ function SecuritySettings() {
           "HTTP-only JWT session cookies",
           "Tenant-scoped API dependencies",
           "Encrypted provider API keys",
-          "Presigned S3 uploads",
+          "Backend-mediated S3 uploads",
           "Prompt injection aware grounding",
           "Audit logs for sensitive actions",
         ].map((item) => (

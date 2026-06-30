@@ -6,7 +6,7 @@ Implemented:
 - OTP expiry, attempt limit, resend cooldown, and auth rate limiting.
 - Organization-scoped dependencies and role capability checks.
 - Encrypted provider keys at rest.
-- Presigned S3 uploads and server-side checksum verification.
+- Backend-mediated S3 uploads and server-side checksum verification.
 - Extension/MIME validation and upload size limits.
 - Audit logs for sensitive operations.
 - Document/category access rules in retrieval queries.

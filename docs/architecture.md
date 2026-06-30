@@ -14,7 +14,7 @@ RAG Console is split into:
 1. Browser authenticates with email OTP.
 2. API sets an HTTP-only session cookie containing user, organization, and role claims.
 3. API dependencies validate the session and membership for every organization-scoped route.
-4. Uploads use presigned MinIO/S3 URLs. The API stores metadata and later verifies the object.
+4. Uploads post multipart form data to the API; the backend writes immutable originals to MinIO/S3 and records checksum metadata.
 5. Pipeline creation writes `pipeline_runs` and `pipeline_run_documents`, then enqueues Celery.
 6. The worker extracts, analyzes, cleans, chunks, embeds, and indexes content.
 7. Chat runs authorization filters, hybrid retrieval, RRF, reranking fallback, context assembly, then returns grounded citations.

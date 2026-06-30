@@ -17,6 +17,16 @@ from app.models.entities import (
 )
 from app.services.storage import build_object_key, put_object_bytes, validate_upload
 
+RETRIEVAL_DEFAULT_KEYS = {
+    "retrieval_algorithm",
+    "max_chunks",
+    "vector_candidate_count",
+    "keyword_candidate_count",
+    "rerank_candidates",
+    "rrf_constant",
+    "similarity_threshold",
+}
+
 
 def create_uploaded_document_from_bytes(
     db: Session,
@@ -87,9 +97,10 @@ def queue_pipeline_for_documents(
     embedding_profile_id: UUID | None = None,
     retrieval_index_config: dict | None = None,
 ) -> PipelineRun:
-    if embedding_profile_id:
-        kb = db.get(KnowledgeBase, knowledge_base_id)
-        if kb and kb.organization_id == organization_id:
+    kb = db.get(KnowledgeBase, knowledge_base_id)
+    if kb and kb.organization_id == organization_id:
+        apply_retrieval_defaults(kb, retrieval_index_config or {})
+        if embedding_profile_id:
             kb.default_embedding_profile_id = embedding_profile_id
     run = PipelineRun(
         organization_id=organization_id,
@@ -123,3 +134,13 @@ def queue_pipeline_for_documents(
     process_pipeline_run_task.delay(str(run.id))
     db.refresh(run)
     return run
+
+
+def apply_retrieval_defaults(kb: KnowledgeBase, retrieval_index_config: dict) -> None:
+    defaults = {
+        key: retrieval_index_config[key]
+        for key in RETRIEVAL_DEFAULT_KEYS
+        if key in retrieval_index_config and retrieval_index_config[key] is not None
+    }
+    if defaults:
+        kb.default_retrieval_config = {**(kb.default_retrieval_config or {}), **defaults}

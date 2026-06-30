@@ -1,6 +1,9 @@
 from app.services.connectors import (
+    _mcp_http_server_config,
+    _mcp_transport,
     _mcp_stdio_server_config,
     is_mcp_tool_read_only,
+    normalize_connector_config,
     normalize_web_document,
     select_mcp_tool_arguments,
     should_use_mcp_tool,
@@ -76,3 +79,76 @@ def test_mcp_stdio_config_skips_disabled_cursor_servers() -> None:
 
     assert config.name == "enabled-server"
     assert config.command == ["node", "server.js"]
+
+
+def test_mcp_cursor_style_http_config_uses_streamable_http() -> None:
+    class Connection:
+        base_url = None
+        config = {
+            "mcpServers": {
+                "n8n-mcp": {
+                    "type": "http",
+                    "url": "https://example.app.n8n.cloud/mcp-server/http",
+                    "headers": {"X-Test": "ok"},
+                }
+            }
+        }
+
+    assert _mcp_transport(Connection()) == "streamable_http"
+    config = _mcp_http_server_config(Connection())
+    assert config.name == "n8n-mcp"
+    assert config.url == "https://example.app.n8n.cloud/mcp-server/http"
+    assert config.headers == {"X-Test": "ok"}
+
+
+def test_mcp_http_config_extracts_bearer_token_to_secret() -> None:
+    base_url, config, secret = normalize_connector_config(
+        kind="mcp",
+        base_url=None,
+        secret=None,
+        config={
+            "mcpServers": {
+                "n8n-mcp": {
+                    "type": "http",
+                    "url": "https://example.app.n8n.cloud/mcp-server/http",
+                    "headers": {"Authorization": "Bearer secret-token"},
+                }
+            }
+        },
+    )
+
+    assert base_url == "https://example.app.n8n.cloud/mcp-server/http"
+    assert config["transport"] == "streamable_http"
+    assert config["headers"] == {}
+    assert config["mcpServers"]["n8n-mcp"]["headers"] == {}
+    assert secret == "secret-token"
+
+    _, config, secret = normalize_connector_config(
+        kind="mcp",
+        base_url=None,
+        secret="existing-secret",
+        config={
+            "mcpServers": {
+                "n8n-mcp": {
+                    "type": "http",
+                    "url": "https://example.app.n8n.cloud/mcp-server/http",
+                    "headers": {"Authorization": "Bearer config-token"},
+                }
+            }
+        },
+    )
+
+    assert config["headers"] == {}
+    assert config["mcpServers"]["n8n-mcp"]["headers"] == {}
+    assert secret == "existing-secret"
+
+
+def test_mcp_tool_filtering_respects_disabled_tools() -> None:
+    tool = {"name": "lookup_policy", "description": "Lookup policy"}
+
+    assert not should_use_mcp_tool(
+        tool,
+        {"disabled_tool_names": ["lookup_policy"]},
+        use_web_search=False,
+        use_mcp_tools=True,
+    )

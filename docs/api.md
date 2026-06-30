@@ -7,7 +7,7 @@ Primary route groups:
 - `/api/auth/*`: OTP, verification, logout, current session.
 - `/api/organizations/*`: current organization, invitations, members.
 - `/api/knowledge-bases/*`: knowledge bases and nested categories.
-- `/api/uploads/*`: presigned upload and completion.
+- `/api/uploads/*`: backend-mediated document upload, plus legacy presign/complete endpoints.
 - `/api/documents/*`: document metadata, preview, quality report, review actions.
 - `/api/pipeline-runs/*`: run creation, listing, cancellation, retry, SSE events.
 - `/api/provider-connections/*`: encrypted provider credentials and connection tests.

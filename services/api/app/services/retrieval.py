@@ -84,40 +84,61 @@ def retrieve(
     chat_session_id: UUID | None = None,
 ) -> tuple[list[Candidate], RetrievalEvent]:
     filters = filters or {}
+    algorithm = str(filters.get("retrieval_algorithm") or filters.get("retrieval_strategy") or "hybrid_rrf")
+    if algorithm not in {"hybrid_rrf", "vector", "keyword"}:
+        algorithm = "hybrid_rrf"
     started = time.perf_counter()
-    embedding_profile = _resolve_embedding_profile(db, organization_id, filters, knowledge_base_ids)
-    embedding = _embed_query(db, organization_id, query, embedding_profile)
-    vector_literal = "[" + ",".join(str(value) for value in embedding) + "]"
-    vector_candidates = _vector_search(
-        db,
-        organization_id,
-        user_id,
-        role,
-        vector_literal,
-        str(embedding_profile.id),
-        knowledge_base_ids,
-        filters,
-    )
+    embedding_profile: EmbeddingProfile | None = None
+    vector_candidates: list[Candidate] = []
+    if algorithm in {"hybrid_rrf", "vector"}:
+        embedding_profile = _resolve_embedding_profile(db, organization_id, filters, knowledge_base_ids)
+        embedding = _embed_query(db, organization_id, query, embedding_profile)
+        vector_literal = "[" + ",".join(str(value) for value in embedding) + "]"
+        vector_candidates = _vector_search(
+            db,
+            organization_id,
+            user_id,
+            role,
+            vector_literal,
+            str(embedding_profile.id),
+            knowledge_base_ids,
+            filters,
+        )
+        vector_candidates = _apply_similarity_threshold(vector_candidates, filters.get("similarity_threshold"))
     vector_ms = int((time.perf_counter() - started) * 1000)
     keyword_started = time.perf_counter()
-    keyword_candidates = _keyword_search(
-        db, organization_id, user_id, role, query, knowledge_base_ids, filters
-    )
+    keyword_candidates: list[Candidate] = []
+    if algorithm in {"hybrid_rrf", "keyword"}:
+        keyword_candidates = _keyword_search(
+            db, organization_id, user_id, role, query, knowledge_base_ids, filters
+        )
     keyword_ms = int((time.perf_counter() - keyword_started) * 1000)
-    rrf = reciprocal_rank_fusion(vector_candidates, keyword_candidates, filters.get("rrf_constant", 60))
+    if algorithm == "vector":
+        rrf = vector_candidates
+    elif algorithm == "keyword":
+        rrf = keyword_candidates
+    else:
+        rrf = reciprocal_rank_fusion(vector_candidates, keyword_candidates, filters.get("rrf_constant", 60))
     reranked = rerank_lexical(query, rrf[: filters.get("rerank_candidates", 20)], filters.get("max_chunks", 8))
+    applied_filters: dict[str, Any] = {
+        "knowledge_base_ids": knowledge_base_ids or [],
+        "retrieval_algorithm": algorithm,
+        **filters,
+    }
+    if embedding_profile:
+        applied_filters.update(
+            {
+                "embedding_profile_id": str(embedding_profile.id),
+                "embedding_model": embedding_profile.model_name,
+            }
+        )
     event = RetrievalEvent(
         organization_id=organization_id,
         user_id=user_id,
         chat_session_id=chat_session_id,
         original_query=query,
         rewritten_query=query.strip(),
-        applied_filters={
-            "knowledge_base_ids": knowledge_base_ids or [],
-            "embedding_profile_id": str(embedding_profile.id),
-            "embedding_model": embedding_profile.model_name,
-            **filters,
-        },
+        applied_filters=applied_filters,
         vector_candidates=[_candidate_debug(candidate) for candidate in vector_candidates],
         keyword_candidates=[_candidate_debug(candidate) for candidate in keyword_candidates],
         rrf_ranking=[_candidate_debug(candidate) for candidate in rrf],
@@ -136,6 +157,16 @@ def retrieve(
         event.rrf_ranking = []
         event.reranker_scores = []
     return reranked, event
+
+
+def _apply_similarity_threshold(candidates: list[Candidate], value: Any) -> list[Candidate]:
+    if value in (None, ""):
+        return candidates
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return candidates
+    return [candidate for candidate in candidates if candidate.score >= threshold]
 
 
 def _access_clause() -> str:

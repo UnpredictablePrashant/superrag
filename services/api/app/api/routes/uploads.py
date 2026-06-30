@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+import json
+from typing import Any
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -8,8 +12,14 @@ from app.api.deps import AuthContext, capability, request_meta
 from app.core.config import settings
 from app.core.security import sha256_bytes
 from app.db.session import get_db
-from app.models.entities import Document, DocumentStatus, DocumentVersion, KnowledgeBase
-from app.schemas.api import UploadCompleteIn, UploadPresignIn, UploadPresignOut
+from app.models.entities import (
+    ConfidentialityLevel,
+    Document,
+    DocumentStatus,
+    DocumentVersion,
+    KnowledgeBase,
+)
+from app.schemas.api import DocumentOut, UploadCompleteIn, UploadPresignIn, UploadPresignOut
 from app.services.audit import write_audit_log
 from app.services.storage import (
     build_object_key,
@@ -18,10 +28,111 @@ from app.services.storage import (
     get_object_bytes,
     head_object,
     internal_s3_client,
+    put_object_bytes,
     validate_upload,
 )
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
+
+
+@router.post("", response_model=DocumentOut)
+def upload_document(
+    request: Request,
+    file: UploadFile = File(...),
+    knowledge_base_id: UUID = Form(...),
+    category_id: UUID | None = Form(default=None),
+    tags: str = Form(default="[]"),
+    business_unit: str | None = Form(default=None),
+    confidentiality: ConfidentialityLevel = Form(default=ConfidentialityLevel.INTERNAL),
+    source_url: str | None = Form(default=None),
+    custom_metadata: str = Form(default="{}"),
+    ctx: AuthContext = Depends(capability("upload_documents")),
+    db: Session = Depends(get_db),
+) -> Document:
+    kb = db.get(KnowledgeBase, knowledge_base_id)
+    if not kb or kb.organization_id != ctx.organization_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Knowledge base not found.")
+
+    filename = file.filename or "upload"
+    content_type = file.content_type or "application/octet-stream"
+    data = _read_upload_bytes(file)
+    if not data:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Upload cannot be empty.")
+
+    parsed_tags = _parse_tags_form(tags)
+    parsed_metadata = _parse_metadata_form(custom_metadata)
+    file_type = validate_upload(filename, content_type, len(data))
+    checksum = sha256_bytes(data)
+
+    document = Document(
+        organization_id=ctx.organization_id,
+        knowledge_base_id=knowledge_base_id,
+        category_id=category_id,
+        name=filename,
+        original_filename=filename,
+        file_type=file_type,
+        file_size=len(data),
+        s3_object_key="pending",
+        tags=parsed_tags,
+        business_unit=business_unit or None,
+        confidentiality=confidentiality,
+        source_url=source_url or None,
+        created_by_user_id=ctx.user.id,
+        uploaded_by_user_id=ctx.user.id,
+        custom_metadata=parsed_metadata,
+        processing_status=DocumentStatus.UPLOADED,
+        checksum=checksum,
+    )
+    db.add(document)
+    db.flush()
+    version = DocumentVersion(
+        organization_id=ctx.organization_id,
+        document_id=document.id,
+        version_number=1,
+        s3_object_key="pending",
+        filename=filename,
+        file_size=len(data),
+        checksum=checksum,
+    )
+    db.add(version)
+    db.flush()
+
+    object_key = build_object_key(
+        str(ctx.organization_id), str(knowledge_base_id), str(document.id), str(version.id), filename
+    )
+    put_object_bytes(object_key, data, content_type)
+    document.s3_object_key = object_key
+    version.s3_object_key = object_key
+
+    duplicate = db.scalar(
+        select(Document).where(
+            Document.organization_id == ctx.organization_id,
+            Document.checksum == checksum,
+            Document.id != document.id,
+            Document.deleted_at.is_(None),
+        )
+    )
+    ip, ua = request_meta(request)
+    write_audit_log(
+        db,
+        organization_id=ctx.organization_id,
+        actor_user_id=ctx.user.id,
+        action="upload.completed",
+        resource_type="document",
+        resource_id=str(document.id),
+        metadata={
+            "checksum": checksum,
+            "duplicate_document_id": str(duplicate.id) if duplicate else None,
+            "filename": filename,
+            "size_bytes": len(data),
+            "transport": "api",
+        },
+        ip_address=ip,
+        user_agent=ua,
+    )
+    db.commit()
+    db.refresh(document)
+    return document
 
 
 @router.post("/presign", response_model=UploadPresignOut)
@@ -155,3 +266,39 @@ def complete_upload(
         "checksum": checksum,
         "duplicate_document_id": str(duplicate.id) if duplicate else None,
     }
+
+
+def _read_upload_bytes(file: UploadFile) -> bytes:
+    data = bytearray()
+    while True:
+        chunk = file.file.read(1024 * 1024)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > settings.max_upload_bytes:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Upload is too large.")
+    return bytes(data)
+
+
+def _parse_tags_form(value: str) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        parsed = [item.strip() for item in value.split(",") if item.strip()]
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Tags must be a list of strings.")
+    return [item.strip() for item in parsed if item.strip()]
+
+
+def _parse_metadata_form(value: str) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Custom metadata must be valid JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Custom metadata must be an object.")
+    return parsed

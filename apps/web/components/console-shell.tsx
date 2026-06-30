@@ -5,6 +5,7 @@ import { Button, cn } from "@rag-console/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
+  BookOpen,
   Bot,
   ClipboardList,
   DatabaseZap,
@@ -23,6 +24,7 @@ const nav = [
   { href: "/data", label: "Data Hub", icon: DatabaseZap },
   { href: "/activity", label: "Activity", icon: ClipboardList },
   { href: "/team", label: "Team", icon: Users },
+  { href: "/help", label: "Docs", icon: BookOpen },
   { href: "/settings", label: "Admin Settings", icon: Settings },
 ];
 

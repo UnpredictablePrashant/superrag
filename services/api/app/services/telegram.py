@@ -44,23 +44,29 @@ def process_telegram_update(db: Session, integration: TelegramIntegration, updat
             TelegramMessageLog.telegram_message_id == message_id,
         )
     )
-    if existing:
+    if existing and existing.status not in {"queued", "received"}:
         return
     source_type = _source_type(message)
     mode = _message_mode(message)
     sender = message.get("from") or {}
     sender_id = sender.get("id")
-    log = TelegramMessageLog(
-        organization_id=integration.organization_id,
-        integration_id=integration.id,
-        telegram_chat_id=chat_id,
-        telegram_message_id=message_id,
-        telegram_user_id=int(sender_id) if sender_id else None,
-        mode=mode,
-        source_type=source_type,
-        payload={"update_id": update.get("update_id"), "from": sender, "source": source_type},
-    )
-    db.add(log)
+    if existing:
+        log = existing
+        log.mode = mode
+        log.source_type = source_type
+        log.payload = {"update_id": update.get("update_id"), "from": sender, "source": source_type}
+    else:
+        log = TelegramMessageLog(
+            organization_id=integration.organization_id,
+            integration_id=integration.id,
+            telegram_chat_id=chat_id,
+            telegram_message_id=message_id,
+            telegram_user_id=int(sender_id) if sender_id else None,
+            mode=mode,
+            source_type=source_type,
+            payload={"update_id": update.get("update_id"), "from": sender, "source": source_type},
+        )
+        db.add(log)
     db.flush()
     client = _client(integration)
     try:
@@ -99,6 +105,54 @@ def process_telegram_update(db: Session, integration: TelegramIntegration, updat
         client.send_message(chat_id, f"Telegram RAG action failed: {str(exc)[:700]}")
     finally:
         db.commit()
+
+
+def record_telegram_update_receipt(
+    db: Session,
+    integration: TelegramIntegration,
+    update: dict[str, Any],
+) -> TelegramMessageLog | None:
+    message = update.get("message") or update.get("edited_message")
+    if not message:
+        return None
+    chat_id = str(message.get("chat", {}).get("id") or "")
+    message_id = int(message.get("message_id") or 0)
+    if not chat_id or not message_id:
+        return None
+    existing = db.scalar(
+        select(TelegramMessageLog).where(
+            TelegramMessageLog.integration_id == integration.id,
+            TelegramMessageLog.telegram_chat_id == chat_id,
+            TelegramMessageLog.telegram_message_id == message_id,
+        )
+    )
+    source_type = _source_type(message)
+    mode = _message_mode(message)
+    sender = message.get("from") or {}
+    sender_id = sender.get("id")
+    payload = {"update_id": update.get("update_id"), "from": sender, "source": source_type}
+    if existing:
+        if existing.status in {"received", "queued"}:
+            existing.status = "queued"
+            existing.mode = mode
+            existing.source_type = source_type
+            existing.payload = payload
+        db.flush()
+        return existing
+    log = TelegramMessageLog(
+        organization_id=integration.organization_id,
+        integration_id=integration.id,
+        telegram_chat_id=chat_id,
+        telegram_message_id=message_id,
+        telegram_user_id=int(sender_id) if sender_id else None,
+        mode=mode,
+        source_type=source_type,
+        status="queued",
+        payload=payload,
+    )
+    db.add(log)
+    db.flush()
+    return log
 
 
 def register_telegram_webhook(integration: TelegramIntegration, webhook_url: str) -> dict[str, Any]:
@@ -349,8 +403,9 @@ def _answer_question(
 
 def _command_body(message: dict[str, Any], command: str) -> str:
     text = str(message.get("text") or message.get("caption") or "").strip()
-    if text.startswith(command):
-        return text[len(command) :].strip()
+    match = re.match(rf"^{re.escape(command)}(?:@[A-Za-z0-9_]+)?(?:\s+|$)(.*)$", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
     return ""
 
 

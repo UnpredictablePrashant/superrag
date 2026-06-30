@@ -54,6 +54,13 @@ class MCPStdioServerConfig:
     env: dict[str, str]
 
 
+@dataclass(frozen=True)
+class MCPHttpServerConfig:
+    name: str | None
+    url: str | None
+    headers: dict[str, str]
+
+
 class ConnectorAdapter:
     def __init__(self, connection: ConnectorConnection):
         self.connection = connection
@@ -134,10 +141,14 @@ class WebConnector(ConnectorAdapter):
 class MCPConnector(ConnectorAdapter):
     def test_connection(self) -> dict[str, Any]:
         discovered = self.discover()
+        tools = [_mcp_tool_summary(tool) for tool in discovered.get("tools", [])]
+        resources = [_mcp_resource_summary(resource) for resource in discovered.get("resources", [])]
         return {
             "status": "ok",
-            "tools": len(discovered.get("tools", [])),
-            "resources": len(discovered.get("resources", [])),
+            "tool_count": len(tools),
+            "resource_count": len(resources),
+            "tools": tools,
+            "resources": resources,
         }
 
     def discover(self) -> dict[str, Any]:
@@ -203,14 +214,62 @@ def connector_capability_metadata(db: Session, connection: ConnectorConnection) 
         )
     )
     configured_tool_names = _configured_mcp_tool_names(connection.config)
+    discovered_tools = [
+        tool
+        for tool in connection.config.get("discovered_tools", [])
+        if isinstance(tool, dict) and str(tool.get("name") or "").strip()
+    ]
     return {
         "sync_supported": connection.kind in {"web", "mcp"},
         "live_tools_supported": connection.kind == "mcp",
         "web_search_supported": _connector_supports_web_search(connection, configured_tool_names),
-        "tool_count": len(configured_tool_names),
+        "tool_count": len(discovered_tools) or len(configured_tool_names),
         "last_sync_status": latest_run.status if latest_run else None,
         "indexed_item_count": int(indexed_item_count or 0),
     }
+
+
+def normalize_connector_config(
+    *,
+    kind: str,
+    base_url: str | None,
+    config: dict[str, Any],
+    secret: str | None,
+) -> tuple[str | None, dict[str, Any], str | None]:
+    if kind != "mcp":
+        return base_url, config, secret
+    normalized = dict(config or {})
+    extracted_secret = secret
+    server_name, server = _selected_mcp_server(normalized)
+    if server:
+        server_copy = dict(server)
+        server_type = _mcp_server_type(server_copy)
+        if server_name:
+            normalized.setdefault("mcp_server_name", server_name)
+        if server_type == "streamable_http":
+            normalized["transport"] = "streamable_http"
+            if isinstance(server_copy.get("url"), str) and server_copy["url"].strip():
+                base_url = base_url or server_copy["url"].strip()
+            headers = {
+                **_headers_object(normalized.get("headers") or {}),
+                **_headers_object(server_copy.get("headers") or {}),
+            }
+            headers, extracted_secret = _extract_bearer_secret(headers, extracted_secret)
+            normalized["headers"] = headers
+            server_copy["headers"] = _headers_object(server_copy.get("headers") or {})
+            server_copy["headers"].pop("Authorization", None)
+            server_copy["headers"].pop("authorization", None)
+        else:
+            normalized["transport"] = "stdio"
+        servers = normalized.get("mcpServers")
+        if isinstance(servers, dict) and server_name:
+            normalized["mcpServers"] = {**servers, server_name: server_copy}
+    else:
+        headers = _headers_object(normalized.get("headers") or {})
+        if headers:
+            headers, extracted_secret = _extract_bearer_secret(headers, extracted_secret)
+            normalized["headers"] = headers
+    return base_url, normalized, extracted_secret
 
 
 def sync_connector_connection(
@@ -271,7 +330,8 @@ def sync_connector_connection(
                 cleanup_profile_id=_uuid_or_none(options.get("cleanup_profile_id")),
                 chunking_profile_id=_uuid_or_none(options.get("chunking_profile_id")),
                 embedding_profile_id=_uuid_or_none(options.get("embedding_profile_id")),
-                retrieval_index_config={"max_chunks": 8, "rrf_constant": 60, "source": "connector_sync"},
+                retrieval_index_config=options.get("retrieval_index_config")
+                or {"max_chunks": 8, "rrf_constant": 60, "source": "connector_sync"},
             )
         connection.last_synced_at = datetime.now(UTC)
         connection.status = "ok"
@@ -475,6 +535,9 @@ def should_use_mcp_tool(
     use_mcp_tools: bool,
 ) -> bool:
     name = str(tool.get("name") or "").lower()
+    disabled_names = {str(value).lower() for value in connection_config.get("disabled_tool_names", [])}
+    if name in disabled_names:
+        return False
     enabled_names = {str(value).lower() for value in connection_config.get("enabled_tool_names", [])}
     if enabled_names and name not in enabled_names:
         return False
@@ -482,7 +545,7 @@ def should_use_mcp_tool(
         return True
     return bool(
         use_mcp_tools
-        and (_tool_has_tag(tool, connection_config, "knowledge_lookup") or _looks_like_lookup_tool(name))
+        and (_tool_has_tag(tool, connection_config, "knowledge_lookup") or _looks_like_lookup_tool(name) or not enabled_names)
     )
 
 
@@ -629,10 +692,7 @@ def _mcp_request(
     *,
     allow_failure: bool = False,
 ) -> dict[str, Any]:
-    transport = str(
-        connection.config.get("transport")
-        or ("stdio" if isinstance(connection.config.get("mcpServers"), dict) else "streamable_http")
-    )
+    transport = _mcp_transport(connection)
     try:
         if transport == "stdio":
             return _mcp_stdio_request(connection, method, params)
@@ -644,12 +704,13 @@ def _mcp_request(
 
 
 def _mcp_http_request(connection: ConnectorConnection, method: str, params: dict[str, Any]) -> dict[str, Any]:
-    if not connection.base_url:
+    server_config = _mcp_http_server_config(connection)
+    if not server_config.url:
         raise ValueError("MCP Streamable HTTP endpoint is required.")
     headers = {
         "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",
-        **{str(k): str(v) for k, v in (connection.config.get("headers") or {}).items()},
+        **server_config.headers,
     }
     if connection.encrypted_secret:
         headers.setdefault("Authorization", f"Bearer {decrypt_secret(connection.encrypted_secret)}")
@@ -658,7 +719,7 @@ def _mcp_http_request(connection: ConnectorConnection, method: str, params: dict
         if not connection.config.get("skip_initialize"):
             initialized, session_id = _mcp_http_jsonrpc(
                 client,
-                connection.base_url,
+                server_config.url,
                 headers,
                 "initialize",
                 {
@@ -672,11 +733,11 @@ def _mcp_http_request(connection: ConnectorConnection, method: str, params: dict
             if session_id:
                 headers["Mcp-Session-Id"] = session_id
             client.post(
-                connection.base_url,
+                server_config.url,
                 headers=headers,
                 json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
             )
-        result, _ = _mcp_http_jsonrpc(client, connection.base_url, headers, method, params, 2)
+        result, _ = _mcp_http_jsonrpc(client, server_config.url, headers, method, params, 2)
         return result
 
 
@@ -757,12 +818,13 @@ def _mcp_stdio_server_config(connection: ConnectorConnection) -> MCPStdioServerC
     if isinstance(config.get("command"), str):
         return _mcp_stdio_from_server_object(config, name=str(config.get("name") or "") or None, root_env={})
 
+    selected_name, selected = _selected_mcp_server(config)
+    if selected and _mcp_server_type(selected) == "streamable_http":
+        raise ValueError("MCP stdio transport cannot run an HTTP MCP server.")
     servers = config.get("mcpServers")
     if not isinstance(servers, dict) or not servers:
         raise ValueError("MCP stdio transport requires config.mcpServers or config.command.")
-    selected_name = str(config.get("mcp_server_name") or config.get("server_name") or "").strip()
     if selected_name:
-        selected = servers.get(selected_name)
         if not isinstance(selected, dict):
             raise ValueError(f"MCP server {selected_name} was not found in config.mcpServers.")
         return _mcp_stdio_from_server_object(selected, selected_name, root_env)
@@ -796,6 +858,90 @@ def _mcp_env(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ValueError("MCP stdio env must be an object.")
     return {str(key): str(env_value) for key, env_value in value.items()}
+
+
+def _mcp_transport(connection: ConnectorConnection) -> str:
+    configured = str((connection.config or {}).get("transport") or "").strip()
+    if configured:
+        if configured in {"http", "streamable-http"}:
+            return "streamable_http"
+        return configured
+    _name, server = _selected_mcp_server(connection.config or {})
+    if server:
+        return _mcp_server_type(server)
+    return "streamable_http"
+
+
+def _mcp_http_server_config(connection: ConnectorConnection) -> MCPHttpServerConfig:
+    config = connection.config or {}
+    name, server = _selected_mcp_server(config)
+    headers = _headers_object(config.get("headers") or {})
+    url = connection.base_url
+    if server and _mcp_server_type(server) == "streamable_http":
+        if isinstance(server.get("url"), str) and server["url"].strip():
+            url = url or server["url"].strip()
+        headers = {**headers, **_headers_object(server.get("headers") or {})}
+    return MCPHttpServerConfig(name=name, url=url, headers=headers)
+
+
+def _selected_mcp_server(config: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict) or not servers:
+        return None, None
+    selected_name = str(config.get("mcp_server_name") or config.get("server_name") or "").strip()
+    if selected_name:
+        selected = servers.get(selected_name)
+        return selected_name, selected if isinstance(selected, dict) else None
+    for name, value in servers.items():
+        if isinstance(value, dict) and value.get("disabled") is not True:
+            return str(name), value
+    return None, None
+
+
+def _mcp_server_type(server: dict[str, Any]) -> str:
+    value = str(server.get("type") or "").strip().lower().replace("-", "_")
+    if value in {"http", "streamable_http", "sse"}:
+        return "streamable_http"
+    if isinstance(server.get("url"), str) and server["url"].strip():
+        return "streamable_http"
+    return "stdio"
+
+
+def _headers_object(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError("MCP HTTP headers must be an object.")
+    return {str(key): str(header_value) for key, header_value in value.items()}
+
+
+def _extract_bearer_secret(headers: dict[str, str], secret: str | None) -> tuple[dict[str, str], str | None]:
+    extracted = secret
+    normalized = dict(headers)
+    auth_key = next((key for key in normalized if key.lower() == "authorization"), None)
+    if auth_key:
+        value = normalized[auth_key].strip()
+        if value.lower().startswith("bearer "):
+            if not extracted:
+                extracted = value[7:].strip()
+            normalized.pop(auth_key, None)
+    return normalized, extracted
+
+
+def _mcp_tool_summary(tool: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(tool.get("name") or ""),
+        "description": str(tool.get("description") or ""),
+        "annotations": tool.get("annotations") if isinstance(tool.get("annotations"), dict) else {},
+        "inputSchema": tool.get("inputSchema") or tool.get("input_schema") or {},
+    }
+
+
+def _mcp_resource_summary(resource: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "uri": str(resource.get("uri") or ""),
+        "name": str(resource.get("name") or ""),
+        "description": str(resource.get("description") or ""),
+        "mimeType": str(resource.get("mimeType") or resource.get("mime_type") or ""),
+    }
 
 
 def _validate_stdio_command(command: list[str]) -> None:

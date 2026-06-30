@@ -293,6 +293,7 @@ class ConnectorSyncIn(BaseModel):
     cleanup_profile_id: UUID | None = None
     chunking_profile_id: UUID | None = None
     embedding_profile_id: UUID | None = None
+    retrieval_index_config: dict[str, Any] = {}
     share_with_organization: bool = False
     options: dict[str, Any] = {}
 
@@ -469,6 +470,22 @@ class TelegramAllowedUserOut(APIModel):
     can_query: bool
     is_enabled: bool
     created_at: datetime
+
+
+class TelegramMessageLogOut(APIModel):
+    id: UUID
+    telegram_chat_id: str
+    telegram_message_id: int
+    telegram_user_id: int | None
+    mode: str
+    source_type: str
+    status: str
+    document_id: UUID | None
+    pipeline_run_id: UUID | None
+    error: str | None
+    payload: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
 
 
 class ChatSessionCreateIn(BaseModel):

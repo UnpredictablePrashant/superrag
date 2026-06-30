@@ -135,6 +135,22 @@ export interface TelegramAllowedUser {
   created_at: string;
 }
 
+export interface TelegramMessageLog {
+  id: string;
+  telegram_chat_id: string;
+  telegram_message_id: number;
+  telegram_user_id?: number | null;
+  mode: string;
+  source_type: string;
+  status: string;
+  document_id?: string | null;
+  pipeline_run_id?: string | null;
+  error?: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ConnectorConnection {
   id: string;
   kind: "web" | "mcp" | string;
@@ -277,6 +293,87 @@ export function listDocuments(knowledgeBaseId?: string) {
   return api<DocumentRecord[]>(`/documents${qs}`);
 }
 
+export interface DocumentPreview {
+  kind?: string | null;
+  text: string;
+}
+
+export interface DocumentPatchInput {
+  name?: string | null;
+  category_id?: string | null;
+  tags?: string[] | null;
+  business_unit?: string | null;
+  confidentiality?: Confidentiality | null;
+  access_policy?: Record<string, unknown> | null;
+  custom_metadata?: Record<string, unknown> | null;
+}
+
+export function previewDocument(documentId: string, kind = "cleaned") {
+  return api<DocumentPreview>(`/documents/${documentId}/preview?kind=${encodeURIComponent(kind)}`);
+}
+
+export function updateDocument(documentId: string, payload: DocumentPatchInput) {
+  return api<DocumentRecord>(`/documents/${documentId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteDocument(documentId: string, hard = false) {
+  return api<{ message: string }>(`/documents/${documentId}${hard ? "?hard=true" : ""}`, { method: "DELETE" });
+}
+
+export function replaceDocumentFile(documentId: string, file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return api<DocumentRecord>(`/documents/${documentId}/replace`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export interface UploadDocumentInput {
+  knowledge_base_id: string;
+  category_id?: string | null;
+  tags?: string[];
+  business_unit?: string | null;
+  confidentiality?: Confidentiality;
+  source_url?: string | null;
+  custom_metadata?: Record<string, unknown>;
+}
+
+export function uploadDocument(file: File, payload: UploadDocumentInput) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("knowledge_base_id", payload.knowledge_base_id);
+  formData.append("tags", JSON.stringify(payload.tags ?? []));
+  formData.append("custom_metadata", JSON.stringify(payload.custom_metadata ?? {}));
+  if (payload.category_id) formData.append("category_id", payload.category_id);
+  if (payload.business_unit) formData.append("business_unit", payload.business_unit);
+  if (payload.confidentiality) formData.append("confidentiality", payload.confidentiality);
+  if (payload.source_url) formData.append("source_url", payload.source_url);
+  return api<DocumentRecord>("/uploads", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export interface PipelineRunCreateInput {
+  knowledge_base_id: string;
+  document_ids: string[];
+  cleanup_profile_id?: string | null;
+  chunking_profile_id?: string | null;
+  embedding_profile_id?: string | null;
+  retrieval_index_config?: Record<string, unknown>;
+}
+
+export function createPipelineRun(payload: PipelineRunCreateInput) {
+  return api<PipelineRun>("/pipeline-runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listPipelineRuns() {
   return api<PipelineRun[]>("/pipeline-runs");
 }
@@ -317,6 +414,23 @@ export function getTelegramIntegration() {
 
 export function listTelegramAllowedUsers() {
   return api<TelegramAllowedUser[]>("/integrations/telegram/allowed-users");
+}
+
+export function listTelegramMessages() {
+  return api<TelegramMessageLog[]>("/integrations/telegram/messages");
+}
+
+export function listMembers() {
+  return api<
+    Array<{
+      id: string;
+      user_id: string;
+      email: string;
+      role: Role;
+      status: string;
+      created_at: string;
+    }>
+  >("/organizations/members");
 }
 
 export function listConnectors() {

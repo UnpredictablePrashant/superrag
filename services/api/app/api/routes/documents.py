@@ -3,19 +3,24 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import AuthContext, capability, require_organization
+from app.api.deps import AuthContext, capability, request_meta, require_organization
+from app.core.config import settings
+from app.core.security import sha256_bytes
 from app.db.session import get_db
 from app.models.entities import (
     DerivedDocumentContent,
     Document,
     DocumentQualityReport,
     DocumentStatus,
+    DocumentVersion,
 )
 from app.schemas.api import DocumentOut, DocumentPatchIn, ReviewActionIn
+from app.services.audit import write_audit_log
+from app.services.storage import build_object_key, put_object_bytes, validate_upload
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -78,6 +83,79 @@ def delete_document(
         document.processing_status = DocumentStatus.DELETED
     db.commit()
     return {"message": "Document deleted."}
+
+
+@router.post("/{document_id}/replace", response_model=DocumentOut)
+def replace_document_file(
+    document_id: UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    ctx: AuthContext = Depends(capability("upload_documents")),
+    db: Session = Depends(get_db),
+) -> Document:
+    document = _get_document(db, ctx.organization_id, document_id)
+    filename = file.filename or document.original_filename
+    content_type = file.content_type or "application/octet-stream"
+    data = _read_upload_bytes(file)
+    if not data:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Upload cannot be empty.")
+
+    file_type = validate_upload(filename, content_type, len(data))
+    checksum = sha256_bytes(data)
+    latest_version = db.scalar(
+        select(DocumentVersion)
+        .where(DocumentVersion.document_id == document.id)
+        .order_by(DocumentVersion.version_number.desc())
+    )
+    next_version_number = (latest_version.version_number if latest_version else document.version_number) + 1
+    version = DocumentVersion(
+        organization_id=ctx.organization_id,
+        document_id=document.id,
+        version_number=next_version_number,
+        s3_object_key="pending",
+        filename=filename,
+        file_size=len(data),
+        checksum=checksum,
+    )
+    db.add(version)
+    db.flush()
+
+    object_key = build_object_key(
+        str(ctx.organization_id), str(document.knowledge_base_id), str(document.id), str(version.id), filename
+    )
+    put_object_bytes(object_key, data, content_type)
+    version.s3_object_key = object_key
+    previous_filename = document.original_filename
+    document.original_filename = filename
+    document.file_type = file_type
+    document.file_size = len(data)
+    document.s3_object_key = object_key
+    document.version_number = next_version_number
+    document.checksum = checksum
+    document.processing_status = DocumentStatus.UPLOADED
+    document.uploaded_by_user_id = ctx.user.id
+
+    ip, ua = request_meta(request)
+    write_audit_log(
+        db,
+        organization_id=ctx.organization_id,
+        actor_user_id=ctx.user.id,
+        action="document.replaced",
+        resource_type="document",
+        resource_id=str(document.id),
+        metadata={
+            "previous_filename": previous_filename,
+            "filename": filename,
+            "version_number": next_version_number,
+            "checksum": checksum,
+            "size_bytes": len(data),
+        },
+        ip_address=ip,
+        user_agent=ua,
+    )
+    db.commit()
+    db.refresh(document)
+    return document
 
 
 @router.get("/{document_id}/quality-report")
@@ -165,8 +243,6 @@ def _get_document(db: Session, organization_id: UUID, document_id: UUID) -> Docu
 
 
 def _latest_version_id(db: Session, document_id: UUID) -> UUID:
-    from app.models.entities import DocumentVersion
-
     version_id = db.scalar(
         select(DocumentVersion.id)
         .where(DocumentVersion.document_id == document_id)
@@ -175,3 +251,15 @@ def _latest_version_id(db: Session, document_id: UUID) -> UUID:
     if not version_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document version not found.")
     return version_id
+
+
+def _read_upload_bytes(file: UploadFile) -> bytes:
+    data = bytearray()
+    while True:
+        chunk = file.file.read(1024 * 1024)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > settings.max_upload_bytes:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Upload is too large.")
+    return bytes(data)

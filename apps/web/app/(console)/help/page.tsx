@@ -6,16 +6,13 @@ import type { ReactNode } from "react";
 
 const mcpConfig = `{
   "mcpServers": {
-    "awslabs.aws-api-mcp-server": {
-      "command": "uvx",
-      "args": [
-        "awslabs.aws-api-mcp-server@latest"
-      ],
-      "env": {
-        "AWS_REGION": "us-east-1"
+    "n8n-mcp": {
+      "type": "http",
+      "url": "https://your-workspace.app.n8n.cloud/mcp-server/http",
+      "headers": {
+        "Authorization": "Bearer <token>"
       },
-      "disabled": false,
-      "autoApprove": []
+      "disabled": false
     }
   }
 }`;
@@ -23,22 +20,20 @@ const mcpConfig = `{
 const mcpApiPayload = `{
   "kind": "mcp",
   "scope": "organization",
-  "name": "AWS API MCP",
+  "name": "n8n MCP",
   "is_enabled": true,
   "config": {
-    "transport": "stdio",
     "mcpServers": {
-      "awslabs.aws-api-mcp-server": {
-        "command": "uvx",
-        "args": ["awslabs.aws-api-mcp-server@latest"],
-        "env": {
-          "AWS_REGION": "us-east-1"
+      "n8n-mcp": {
+        "type": "http",
+        "url": "https://your-workspace.app.n8n.cloud/mcp-server/http",
+        "headers": {
+          "Authorization": "Bearer <token>"
         },
-        "disabled": false,
-        "autoApprove": []
+        "disabled": false
       }
     },
-    "enabled_tool_names": [],
+    "disabled_tool_names": [],
     "tool_tags": {}
   }
 }`;
@@ -120,17 +115,17 @@ export default function DocsPage() {
               <Badge tone="green">Cursor-style JSON</Badge>
             </div>
             <p className="mt-3 text-sm leading-6 text-zinc-600">
-              MCP connectors support Streamable HTTP and stdio. The stdio path accepts the same `mcpServers` shape used
-              by Cursor-style configs.
+              MCP connectors support Streamable HTTP and stdio. Paste a Cursor-style `mcpServers` config and the app
+              detects the server, transport, and available tools when you test the connector.
             </p>
 
             <div className="mt-5 grid gap-4 lg:grid-cols-2">
               <DocBlock title="Settings Form" icon={TerminalSquare}>
                 <ol className="list-decimal space-y-2 pl-5 text-sm leading-6 text-zinc-600">
                   <li>Open Settings, Connectors.</li>
-                  <li>Choose MCP server and Stdio transport.</li>
-                  <li>Paste the Cursor MCP JSON into the Cursor MCP JSON field.</li>
-                  <li>Save, test, then enable MCP Tools in Chat.</li>
+                  <li>Choose MCP server and paste the Cursor MCP JSON into the Cursor MCP JSON field.</li>
+                  <li>Save, test, then use the detected tool toggles to keep tools active or inactive.</li>
+                  <li>Pause or enable the MCP source from the connector list. Enable MCP Tools in Chat when you want live calls.</li>
                 </ol>
               </DocBlock>
               <DocBlock title="Production Guardrail" icon={ShieldCheck}>
@@ -144,7 +139,7 @@ export default function DocsPage() {
 
             <div className="mt-5 space-y-4">
               <div>
-                <p className="mb-2 font-medium text-zinc-950">Cursor MCP JSON</p>
+                <p className="mb-2 font-medium text-zinc-950">Hosted MCP JSON</p>
                 <CodeBlock value={mcpConfig} />
               </div>
               <div>

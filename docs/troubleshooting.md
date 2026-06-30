@@ -6,7 +6,7 @@ Open Mailpit at `http://localhost:8025`. If `ALLOW_DEV_AUTH_CODES=true`, the API
 
 ## Upload fails with CORS
 
-Confirm `minio-init` ran successfully and that the browser is using `http://localhost:9000` presigned URLs.
+Confirm the web app is calling the API upload route (`/api/uploads`) rather than a direct S3 URL. If the API returns a storage error, check MinIO/S3 credentials, bucket creation, and network access from the backend.
 
 ## Pipeline stays queued
 

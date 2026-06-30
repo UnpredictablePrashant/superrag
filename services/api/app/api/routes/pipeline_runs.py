@@ -22,6 +22,7 @@ from app.models.entities import (
     PipelineStage,
 )
 from app.schemas.api import PipelineRunCreateIn, PipelineRunOut
+from app.services.document_ingestion import apply_retrieval_defaults
 from app.workers.tasks import process_pipeline_run_task
 
 router = APIRouter(prefix="/pipeline-runs", tags=["pipeline-runs"])
@@ -65,6 +66,8 @@ def create_pipeline_run(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Embedding profile not found.")
         if not embedding_backfill:
             kb.default_embedding_profile_id = embedding_profile.id
+    if not embedding_backfill:
+        apply_retrieval_defaults(kb, payload.retrieval_index_config)
     run = PipelineRun(
         organization_id=ctx.organization_id,
         knowledge_base_id=payload.knowledge_base_id,

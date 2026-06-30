@@ -2,12 +2,12 @@
 
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
-import { api, getWorkspaceSummary, listConnectors, listDocuments, listPipelineRuns } from "@/lib/api";
+import { api, getWorkspaceSummary, listConnectors, listDocuments, listPipelineRuns, listTelegramMessages } from "@/lib/api";
 import { formatDuration, shortDate } from "@/lib/format";
 import type { DocumentRecord, PipelineRun } from "@rag-console/shared-types";
 import { Badge, Panel } from "@rag-console/ui";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Bell, FileStack, Plug, RefreshCw } from "lucide-react";
+import { Activity, Bell, Bot, FileStack, Plug, RefreshCw } from "lucide-react";
 import Link from "next/link";
 
 export default function ActivityPage() {
@@ -15,6 +15,7 @@ export default function ActivityPage() {
   const runs = useQuery({ queryKey: ["pipeline-runs"], queryFn: listPipelineRuns, refetchInterval: 5000 });
   const documents = useQuery({ queryKey: ["documents"], queryFn: () => listDocuments() });
   const connectors = useQuery({ queryKey: ["connectors"], queryFn: listConnectors, refetchInterval: 10000 });
+  const telegramMessages = useQuery({ queryKey: ["telegram-messages"], queryFn: listTelegramMessages, refetchInterval: 5000 });
   const notifications = useQuery({ queryKey: ["notifications"], queryFn: () => api<Array<Record<string, unknown>>>("/notifications") });
 
   const reviewDocs = (documents.data ?? []).filter((doc) => ["AWAITING_REVIEW", "FAILED"].includes(doc.processing_status));
@@ -93,6 +94,28 @@ export default function ActivityPage() {
               </div>
             ))}
             {!connectors.data?.length ? <p className="text-sm text-zinc-500">No sources connected.</p> : null}
+          </div>
+        </Panel>
+
+        <Panel className="p-5">
+          <div className="flex items-center gap-2">
+            <Bot className="h-5 w-5 text-sky-700" aria-hidden />
+            <h3 className="font-semibold text-zinc-950">Telegram messages</h3>
+          </div>
+          <div className="mt-4 divide-y divide-zinc-100">
+            {(telegramMessages.data ?? []).slice(0, 8).map((message) => (
+              <div key={message.id} className="py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-medium text-zinc-950">
+                    {message.mode} / {message.source_type}
+                  </p>
+                  <StatusBadge status={message.status} />
+                </div>
+                {message.error ? <p className="mt-1 text-sm text-rose-700">{message.error}</p> : null}
+                <p className="mt-1 text-xs text-zinc-500">{shortDate(message.created_at)}</p>
+              </div>
+            ))}
+            {!telegramMessages.data?.length ? <p className="text-sm text-zinc-500">No Telegram messages received.</p> : null}
           </div>
         </Panel>
 

@@ -1,10 +1,31 @@
 # MCP Connectors
 
-MCP connectors can run either through Streamable HTTP or through stdio commands. The stdio path accepts Cursor-style `mcpServers` JSON.
+MCP connectors can run either through Streamable HTTP or through stdio commands. Paste Cursor-style `mcpServers` JSON and the API infers the transport, selects the first non-disabled server, and discovers tools when the connector is tested.
+
+## Hosted HTTP Config
+
+Hosted MCP servers such as n8n can be added with their HTTP endpoint directly in `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "n8n-mcp": {
+      "type": "http",
+      "url": "https://your-workspace.app.n8n.cloud/mcp-server/http",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "disabled": false
+    }
+  }
+}
+```
+
+If an `Authorization: Bearer ...` header is present, the API extracts it into the connector secret and stores only the non-secret config.
 
 ## Cursor-Style Stdio Config
 
-Open `Settings -> Connectors`, choose `MCP server`, keep transport set to `Stdio`, and paste JSON like this:
+Open `Settings -> Connectors`, choose `MCP server`, and paste JSON like this. The app detects this as stdio from the command-based server entry:
 
 ```json
 {
@@ -58,22 +79,20 @@ You can create the same connector directly through the API:
 {
   "kind": "mcp",
   "scope": "organization",
-  "name": "AWS API MCP",
+  "name": "n8n MCP",
   "is_enabled": true,
   "config": {
-    "transport": "stdio",
     "mcpServers": {
-      "awslabs.aws-api-mcp-server": {
-        "command": "uvx",
-        "args": ["awslabs.aws-api-mcp-server@latest"],
-        "env": {
-          "AWS_REGION": "us-east-1"
+      "n8n-mcp": {
+        "type": "http",
+        "url": "https://your-workspace.app.n8n.cloud/mcp-server/http",
+        "headers": {
+          "Authorization": "Bearer <token>"
         },
-        "disabled": false,
-        "autoApprove": []
+        "disabled": false
       }
     },
-    "enabled_tool_names": [],
+    "disabled_tool_names": [],
     "tool_tags": {}
   }
 }
@@ -89,10 +108,6 @@ MCP_STDIO_ALLOWLIST=uvx,uvx awslabs.aws-api-mcp-server@latest
 
 Connector `config` is stored as connector configuration, so avoid putting long-lived secrets directly in `mcpServers.env`. Prefer instance roles, workload identity, short-lived credentials, or environment already available to the API container.
 
-## Streamable HTTP
-
-For hosted MCP servers, choose transport `Streamable HTTP`, set the MCP endpoint as the connector base URL, and optionally set a bearer token in `Secret`. The backend initializes the MCP session and calls JSON-RPC methods against the endpoint.
-
 ## Chat Usage
 
-After saving and testing an MCP connector, open Chat, enable `MCP Tools`, and select the connector. Only read-only tools are called by default. Tool names can be limited with `enabled_tool_names`, and tool tags can mark tools for `web_search` or `knowledge_lookup`.
+After saving and testing an MCP connector, open Chat, enable `MCP Tools`, and select the connector. Testing caches the detected tools on the connector. Tools are active by default; turn individual tools off with the detected tool toggles, which writes `disabled_tool_names` into connector config. Tool tags can still mark tools for `web_search` or `knowledge_lookup`.

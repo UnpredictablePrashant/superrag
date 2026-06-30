@@ -1,6 +1,6 @@
 # RAG Console
 
-RAG Console is a production-minded multi-tenant Enterprise RAG SaaS starter. It includes a Next.js console, FastAPI backend, PostgreSQL with pgvector, Redis/Celery workers, MinIO/S3 presigned uploads, Mailpit OTP email, ingestion, deterministic local embeddings, hybrid retrieval, citations, Docker Compose, tests, and AWS Terraform starter files.
+RAG Console is a production-minded multi-tenant Enterprise RAG SaaS starter. It includes a Next.js console, FastAPI backend, PostgreSQL with pgvector, Redis/Celery workers, backend-mediated MinIO/S3 uploads, Mailpit OTP email, ingestion, deterministic local embeddings, hybrid retrieval, citations, Docker Compose, tests, and AWS Terraform starter files.
 
 ## Quick Start
 
@@ -36,7 +36,7 @@ GitHub Actions deployment to a single EC2 instance at `https://rag.atharvaai.com
 
 - Passwordless email OTP auth with expiry, resend cooldown, attempts, session cookies, logout, onboarding, invitations, and role checks.
 - Organization-scoped data model for users, members, providers, knowledge bases, categories, documents, versions, profiles, chunks, vectors, pipeline runs, chat, notifications, audit logs, and usage metrics.
-- Presigned S3/MinIO uploads with immutable originals, checksum calculation, duplicate detection, version metadata, soft delete, and multipart URL generation.
+- Backend-mediated S3/MinIO uploads with immutable originals, checksum calculation, duplicate detection, version metadata, and soft delete.
 - Celery ingestion worker with extraction, quality reports, cleanup profiles, review pauses, chunking profiles, deterministic embeddings, pgvector storage, notifications, retries, cancellation flags, and SSE pipeline progress.
 - Hybrid retrieval using pgvector similarity, PostgreSQL full-text search, Reciprocal Rank Fusion, local reranking fallback, context assembly, citations, and tenant/access filters.
 - Chat UI with sessions, streaming display, citation drawer, selected knowledge base, retrieval controls, and debug toggle.

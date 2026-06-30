@@ -26,6 +26,7 @@ from app.services.audit import write_audit_log
 from app.services.connectors import (
     connector_capability_metadata,
     get_connector_adapter,
+    normalize_connector_config,
     save_live_result_as_document,
 )
 from app.workers.tasks import process_connector_sync_task
@@ -63,6 +64,12 @@ def create_connector(
     ctx: AuthContext = Depends(require_organization),
     db: Session = Depends(get_db),
 ) -> dict:
+    base_url, config, secret = normalize_connector_config(
+        kind=payload.kind,
+        base_url=payload.base_url,
+        config=payload.config,
+        secret=payload.secret,
+    )
     _require_scope_management(ctx, payload.scope, owner_user_id=ctx.user.id)
     duplicate = db.scalar(
         select(ConnectorConnection).where(
@@ -81,11 +88,11 @@ def create_connector(
         scope=payload.scope,
         kind=payload.kind,
         name=payload.name,
-        encrypted_secret=encrypt_secret(payload.secret) if payload.secret else None,
-        masked_secret=mask_secret(payload.secret) if payload.secret else None,
-        base_url=payload.base_url,
+        encrypted_secret=encrypt_secret(secret) if secret else None,
+        masked_secret=mask_secret(secret) if secret else None,
+        base_url=base_url,
         is_enabled=payload.is_enabled,
-        config=payload.config,
+        config=config,
     )
     db.add(connection)
     db.flush()
@@ -115,18 +122,24 @@ def patch_connector(
     db: Session = Depends(get_db),
 ) -> dict:
     connection = _get_connection(db, ctx, connection_id, manage=True)
+    base_url, config, extracted_secret = normalize_connector_config(
+        kind=connection.kind,
+        base_url=payload.base_url if payload.base_url is not None else connection.base_url,
+        config=payload.config if payload.config is not None else connection.config,
+        secret=payload.secret,
+    )
     if payload.name is not None:
         connection.name = payload.name
-    if payload.secret is not None:
-        connection.encrypted_secret = encrypt_secret(payload.secret)
-        connection.masked_secret = mask_secret(payload.secret)
+    if extracted_secret is not None:
+        connection.encrypted_secret = encrypt_secret(extracted_secret)
+        connection.masked_secret = mask_secret(extracted_secret)
         connection.status = "rotated"
-    if payload.base_url is not None:
-        connection.base_url = payload.base_url
+    if payload.base_url is not None or base_url != connection.base_url:
+        connection.base_url = base_url
     if payload.is_enabled is not None:
         connection.is_enabled = payload.is_enabled
     if payload.config is not None:
-        connection.config = payload.config
+        connection.config = config
     ip, ua = request_meta(request)
     write_audit_log(
         db,
@@ -180,6 +193,13 @@ def test_connector(
     try:
         result = get_connector_adapter(connection).test_connection()
         connection.status = result.get("status", "ok")
+        if connection.kind == "mcp" and result.get("status") == "ok":
+            connection.config = {
+                **(connection.config or {}),
+                "discovered_tools": result.get("tools", []),
+                "discovered_resources": result.get("resources", []),
+                "last_discovered_at": datetime.now(UTC).isoformat(),
+            }
     except Exception as exc:
         connection.status = "error"
         result = {"status": "error", "message": str(exc)[:500]}
@@ -237,6 +257,7 @@ def sync_connector(
         "cleanup_profile_id": str(payload.cleanup_profile_id) if payload.cleanup_profile_id else None,
         "chunking_profile_id": str(payload.chunking_profile_id) if payload.chunking_profile_id else None,
         "embedding_profile_id": str(payload.embedding_profile_id) if payload.embedding_profile_id else None,
+        "retrieval_index_config": payload.retrieval_index_config,
         "share_with_organization": payload.share_with_organization,
     }
     run = ConnectorRun(

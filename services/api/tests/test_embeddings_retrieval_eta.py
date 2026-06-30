@@ -4,7 +4,12 @@ from app.services.embeddings import cosine_similarity, deterministic_embedding
 from app.services.eta import StageWork, estimate_completion_seconds, update_ema
 from app.services.pipeline import _is_embedding_backfill
 from app.services.providers import embedding_dimension_for_model, infer_capability
-from app.services.retrieval import Candidate, reciprocal_rank_fusion, rerank_lexical
+from app.services.retrieval import (
+    Candidate,
+    _apply_similarity_threshold,
+    reciprocal_rank_fusion,
+    rerank_lexical,
+)
 
 
 def test_deterministic_embeddings_are_stable_and_semantic_enough() -> None:
@@ -52,6 +57,17 @@ def test_rrf_merges_vector_and_keyword_rankings() -> None:
     fused = reciprocal_rank_fusion(vector, keyword, k=60)
     assert {candidate.chunk_id for candidate in fused} == {"a", "b", "c"}
     assert fused[0].chunk_id == "b"
+
+
+def test_similarity_threshold_filters_vector_candidates() -> None:
+    candidates = [
+        Candidate("a", "d1", "Doc", "leave policy", 0.35, "vector", {}),
+        Candidate("b", "d2", "Doc", "security policy", 0.05, "vector", {}),
+    ]
+
+    filtered = _apply_similarity_threshold(candidates, 0.1)
+
+    assert [candidate.chunk_id for candidate in filtered] == ["a"]
 
 
 def test_local_reranker_boosts_query_overlap() -> None:

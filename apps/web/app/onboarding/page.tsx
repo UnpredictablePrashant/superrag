@@ -5,6 +5,7 @@ import { api, getMe } from "@/lib/api";
 import { Button, Input, Label, Panel, Select } from "@rag-console/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Building2, Database, KeyRound, Send, UploadCloud } from "lucide-react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 
@@ -56,10 +57,18 @@ export default function OnboardingPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f6f7f4] px-6 py-10">
+    <main className="min-h-screen bg-[#f8f2ef] px-6 py-10">
       <div className="mx-auto max-w-5xl">
         <div className="mb-8">
-          <h1 className="text-3xl font-semibold text-zinc-950">Set up RAG Console</h1>
+          <Image
+            src="/brand/unitus-logo.png"
+            alt="Unitus Capital"
+            width={1124}
+            height={181}
+            priority
+            className="mb-5 h-9 w-auto max-w-[200px] object-contain"
+          />
+          <h1 className="text-3xl font-semibold text-[#083d59]">Set up Unitus Capital Knowledge Console</h1>
           <p className="mt-2 text-zinc-500">Create the tenant, seed a knowledge base, and prepare ingestion.</p>
         </div>
         <ErrorBox message={error} />

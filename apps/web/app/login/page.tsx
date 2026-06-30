@@ -4,7 +4,8 @@ import { ErrorBox } from "@/components/error-box";
 import { api } from "@/lib/api";
 import { Button, Input, Label, Panel } from "@rag-console/ui";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight, Bot, Mail, RotateCw, ShieldCheck } from "lucide-react";
+import { ArrowRight, Mail, RotateCw, ShieldCheck } from "lucide-react";
+import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 import { Suspense } from "react";
@@ -73,16 +74,21 @@ function LoginClient() {
   }
 
   return (
-    <main className="grid min-h-screen bg-[#f6f7f4] lg:grid-cols-[1.1fr_0.9fr]">
+    <main className="grid min-h-screen bg-[#f8f2ef] lg:grid-cols-[1.1fr_0.9fr]">
       <section className="flex items-center justify-center px-6 py-10">
         <div className="w-full max-w-md">
           <div className="mb-8 flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-md bg-zinc-950 text-white">
-              <Bot className="h-5 w-5" aria-hidden />
-            </span>
+            <Image
+              src="/brand/unitus-logo.png"
+              alt="Unitus Capital"
+              width={1124}
+              height={181}
+              priority
+              className="h-9 w-auto max-w-[190px] object-contain"
+            />
             <div>
-              <h1 className="text-xl font-semibold text-zinc-950">RAG Console</h1>
-              <p className="text-sm text-zinc-500">Secure enterprise knowledge access</p>
+              <h1 className="text-xl font-semibold text-[#083d59]">Knowledge Console</h1>
+              <p className="text-sm text-zinc-500">Secure Unitus Capital knowledge access</p>
             </div>
           </div>
           <Panel className="p-6">
@@ -107,7 +113,7 @@ function LoginClient() {
               </form>
             ) : (
               <form className="mt-5 space-y-4" onSubmit={otpForm.handleSubmit(verifyOtp)}>
-                <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                <div className="rounded-md bg-[#f8d8ca] px-3 py-2 text-sm text-[#083d59]">
                   Code sent to {email}
                   {devCode ? <span className="block font-mono">Local code: {devCode}</span> : null}
                 </div>
@@ -127,17 +133,17 @@ function LoginClient() {
           </Panel>
         </div>
       </section>
-      <section className="hidden items-center bg-zinc-950 px-12 text-white lg:flex">
+      <section className="hidden items-center bg-[#083d59] px-12 text-white lg:flex">
         <div className="max-w-xl">
-          <ShieldCheck className="h-10 w-10 text-emerald-300" aria-hidden />
-          <h2 className="mt-6 text-4xl font-semibold">Private knowledge, answerable with evidence.</h2>
+          <ShieldCheck className="h-10 w-10 text-[#f15829]" aria-hidden />
+          <h2 className="mt-6 text-4xl font-semibold">Unitus Capital knowledge, answerable with evidence.</h2>
           <p className="mt-4 text-base leading-7 text-zinc-300">
             Upload internal documents, inspect data quality, control ingestion, and retrieve only the sources each
             user is allowed to see.
           </p>
           <div className="mt-8 grid grid-cols-3 gap-3 text-sm">
             {["Tenant isolation", "Citations", "Provider control"].map((item) => (
-              <div key={item} className="rounded-md border border-white/10 bg-white/5 p-3 text-zinc-200">
+              <div key={item} className="rounded-md border border-white/10 bg-white/5 p-3 text-[#f8f2ef]">
                 {item}
               </div>
             ))}

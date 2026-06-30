@@ -15,11 +15,11 @@ export const Button = React.forwardRef<
     <button
       ref={ref}
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-md font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex items-center justify-center gap-2 rounded-md font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-[#f15829] disabled:cursor-not-allowed disabled:opacity-50",
         size === "sm" && "h-8 px-3 text-sm",
         size === "md" && "h-10 px-4 text-sm",
         size === "icon" && "h-9 w-9",
-        variant === "primary" && "bg-emerald-600 text-white hover:bg-emerald-700",
+        variant === "primary" && "bg-[#e3602a] text-white hover:bg-[#c94f25]",
         variant === "secondary" && "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50",
         variant === "ghost" && "text-zinc-700 hover:bg-zinc-100",
         variant === "danger" && "bg-rose-600 text-white hover:bg-rose-700",
@@ -37,7 +37,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
       ref={ref}
       {...props}
       className={cn(
-        "h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100",
+        "h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-[#e3602a] focus:ring-2 focus:ring-[#f8d8ca]",
         props.className,
       )}
     />
@@ -53,7 +53,7 @@ export const Textarea = React.forwardRef<
       ref={ref}
       {...props}
       className={cn(
-        "min-h-28 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100",
+        "min-h-28 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-[#e3602a] focus:ring-2 focus:ring-[#f8d8ca]",
         props.className,
       )}
     />
@@ -67,7 +67,7 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
       ref={ref}
       {...props}
       className={cn(
-        "h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100",
+        "h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition focus:border-[#e3602a] focus:ring-2 focus:ring-[#f8d8ca]",
         props.className,
       )}
     />

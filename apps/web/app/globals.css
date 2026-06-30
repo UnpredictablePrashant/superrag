@@ -13,8 +13,8 @@
 html,
 body {
   min-height: 100%;
-  background: #f6f7f4;
-  color: #18181b;
+  background: #f8f2ef;
+  color: #0b2230;
 }
 
 body {
@@ -29,5 +29,5 @@ select {
 }
 
 ::selection {
-  background: #bbf7d0;
+  background: #f7c7b4;
 }

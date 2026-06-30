@@ -6,7 +6,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
   BookOpen,
-  Bot,
   ClipboardList,
   DatabaseZap,
   LogOut,
@@ -16,6 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 
@@ -53,15 +53,19 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#f6f7f4]">
-      <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 border-r border-zinc-200 bg-white lg:block">
+    <div className="min-h-screen bg-[#f8f2ef]">
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 border-r border-[#e8d9d2] bg-white lg:block">
         <div className="flex h-full flex-col">
-          <div className="flex h-16 items-center gap-3 border-b border-zinc-200 px-5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-white">
-              <Bot className="h-5 w-5" aria-hidden />
-            </span>
-            <div>
-              <p className="font-semibold text-zinc-950">Enterprise RAG</p>
+          <div className="flex h-20 flex-col items-start justify-center border-b border-[#e8d9d2] px-5">
+            <Image
+              src="/brand/unitus-logo.png"
+              alt="Unitus Capital"
+              width={1124}
+              height={181}
+              className="h-7 w-auto max-w-[175px] object-contain"
+            />
+            <div className="mt-1">
+              <p className="text-sm font-semibold text-[#083d59]">Knowledge Console</p>
               <p className="text-xs text-zinc-500">{me.data?.organization?.name ?? "No organization"}</p>
             </div>
           </div>
@@ -74,7 +78,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
                   href={item.href}
                   className={cn(
                     "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition",
-                    active ? "bg-emerald-50 text-emerald-800" : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950",
+                    active ? "bg-[#f8d8ca] text-[#083d59]" : "text-zinc-600 hover:bg-[#f8f2ef] hover:text-[#083d59]",
                   )}
                 >
                   <item.icon className="h-4 w-4" aria-hidden />
@@ -99,10 +103,10 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
       <div className="lg:pl-72">
-        <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-zinc-200 bg-white/90 px-4 backdrop-blur lg:px-8">
+        <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-[#e8d9d2] bg-white/90 px-4 backdrop-blur lg:px-8">
           <div>
             <p className="text-sm font-medium text-zinc-500">Connected company knowledge</p>
-            <h1 className="text-lg font-semibold text-zinc-950">{me.data?.organization?.name ?? "RAG Console"}</h1>
+            <h1 className="text-lg font-semibold text-[#083d59]">{me.data?.organization?.name ?? "Unitus Capital"}</h1>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="secondary" size="icon" title="Notifications">

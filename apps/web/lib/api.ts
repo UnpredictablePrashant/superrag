@@ -86,6 +86,18 @@ export interface EmbeddingProfile {
   config: Record<string, unknown>;
 }
 
+export interface EmbeddingProfileCreateInput {
+  provider_connection_id?: string | null;
+  name: string;
+  model_name: string;
+  embedding_dimension: number;
+  batch_size?: number;
+  rate_limit_per_minute?: number | null;
+  normalization?: string;
+  is_active?: boolean;
+  config?: Record<string, unknown>;
+}
+
 export interface ProcessingProfile {
   id: string;
   name: string;
@@ -432,6 +444,13 @@ export function listProfiles() {
 
 export function listProviderModels(refresh = false) {
   return api<ModelOption[]>(`/provider-connections/models${refresh ? "?refresh=true" : ""}`);
+}
+
+export function createEmbeddingProfile(payload: EmbeddingProfileCreateInput) {
+  return api<{ id: string; message: string }>("/profiles/embeddings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function getTelegramIntegration() {

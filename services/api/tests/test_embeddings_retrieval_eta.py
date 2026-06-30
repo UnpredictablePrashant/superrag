@@ -45,6 +45,16 @@ def test_local_embedding_provider_can_use_profile_dimension() -> None:
     assert len(vectors[0]) == 384
 
 
+def test_local_embedding_provider_is_always_available(monkeypatch) -> None:
+    from app.services.embeddings import get_embedding_provider, settings
+
+    monkeypatch.setattr(settings, "enable_dev_embedding_provider", False)
+
+    provider = get_embedding_provider("Local", dimension=384)
+
+    assert provider.model_name == "deterministic-local-384"
+
+
 def test_pipeline_embedding_backfill_mode_is_explicit() -> None:
     class Run:
         retrieval_index_config = {"migration_mode": "embedding_backfill"}

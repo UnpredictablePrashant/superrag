@@ -4,6 +4,7 @@ import { ErrorBox } from "@/components/error-box";
 import { StatusBadge } from "@/components/status-badge";
 import {
   api,
+  createEmbeddingProfile,
   getTelegramIntegration,
   listConnectors,
   listKnowledgeBases,
@@ -408,6 +409,7 @@ function ProviderSettings() {
     queryKey: ["provider-models"],
     queryFn: () => listProviderModels(),
   });
+  const profiles = useQuery({ queryKey: ["profiles"], queryFn: listProfiles });
   const create = useMutation({
     mutationFn: () =>
       api("/provider-connections", {
@@ -428,6 +430,35 @@ function ProviderSettings() {
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Could not save provider."),
   });
+  const createEmbedding = useMutation({
+    mutationFn: (option: ModelOption) =>
+      createEmbeddingProfile({
+        provider_connection_id: option.provider_connection_id ?? null,
+        name:
+          option.provider === "Local"
+            ? "Local deterministic embedding"
+            : `${option.connection_name} ${option.model}`,
+        model_name: option.model,
+        embedding_dimension: option.embedding_dimension ?? (option.provider === "Local" ? 384 : 1536),
+        batch_size: 64,
+        normalization: "l2",
+        is_active: true,
+        config: {
+          provider: option.provider,
+          connection_name: option.connection_name,
+        },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      setError("");
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not create embedding profile."),
+  });
+
+  const embeddingOptions = (modelOptions.data ?? []).filter(
+    (option) => option.supports_embeddings && ["Local", "OpenAI"].includes(option.provider),
+  );
+  const existingEmbeddingProfiles = profiles.data?.embedding_profiles ?? [];
 
   async function test(id: string) {
     setError("");
@@ -498,6 +529,52 @@ function ProviderSettings() {
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-sky-700" aria-hidden />
           <h3 className="font-semibold text-zinc-950">Configured model options</h3>
+        </div>
+        <div className="mt-4 rounded-md border border-zinc-200 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-medium text-zinc-950">Embedding options</h4>
+              <p className="mt-1 text-sm text-zinc-500">Create an active Local or OpenAI embedding profile.</p>
+            </div>
+            {createEmbedding.isPending ? <Badge tone="amber">Saving</Badge> : null}
+          </div>
+          <div className="mt-3 space-y-2">
+            {embeddingOptions.map((option, index) => {
+              const existing = existingEmbeddingProfiles.find(
+                (profile) =>
+                  profile.provider === option.provider &&
+                  profile.model_name === option.model &&
+                  (profile.provider_connection_id ?? null) === (option.provider_connection_id ?? null),
+              );
+              return (
+                <div key={`${option.provider}-${option.model}-${index}`} className="flex flex-col gap-2 rounded-md bg-zinc-50 p-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-zinc-950">
+                      {option.provider} / {option.model}
+                    </p>
+                    <p className="text-xs text-zinc-500">
+                      {option.connection_name} / {option.embedding_dimension ?? "default"} dimensions
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {existing?.is_active ? <Badge tone="green">Active</Badge> : existing ? <Badge tone="blue">Profile exists</Badge> : null}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={createEmbedding.isPending || existing?.is_active}
+                      onClick={() => createEmbedding.mutate(option)}
+                    >
+                      <Save className="h-4 w-4" aria-hidden />
+                      {existing ? "Make active copy" : "Enable"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+            {!embeddingOptions.length ? (
+              <p className="text-sm text-zinc-500">Local embeddings are available by default. Add an OpenAI connection to enable OpenAI embedding models.</p>
+            ) : null}
+          </div>
         </div>
         <div className="mt-4 max-h-[540px] space-y-2 overflow-auto">
           {(modelOptions.data ?? []).map((capability, index) => (

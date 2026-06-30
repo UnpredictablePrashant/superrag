@@ -80,7 +80,7 @@ def get_embedding_provider(
     base_url: str | None = None,
     dimension: int | None = None,
 ) -> EmbeddingProvider:
-    if provider == "Local" and settings.enable_dev_embedding_provider:
+    if provider == "Local":
         return DeterministicEmbeddingProvider(dimension=dimension)
     if provider == "OpenAI":
         return OpenAIEmbeddingProvider(

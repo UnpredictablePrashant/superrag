@@ -21,7 +21,6 @@ import {
   listDocuments,
   listKnowledgeBases,
   listMembers,
-  listPipelineRuns,
   listProfiles,
   previewDocument,
   replaceDocumentFile,
@@ -35,7 +34,7 @@ import {
   uploadDocument,
 } from "@/lib/api";
 import { formatBytes, shortDate } from "@/lib/format";
-import type { Confidentiality, DocumentRecord, KnowledgeBase, PipelineRun } from "@rag-console/shared-types";
+import type { Confidentiality, DocumentRecord, KnowledgeBase } from "@rag-console/shared-types";
 import { Badge, Button, Input, Label, Panel, Select, Textarea } from "@rag-console/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -89,7 +88,6 @@ export default function DataHubPage() {
   const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
   const docs = useQuery({ queryKey: ["documents", selectedKbId], queryFn: () => listDocuments(selectedKbId || undefined) });
   const connectors = useQuery({ queryKey: ["connectors"], queryFn: listConnectors, refetchInterval: 10000 });
-  const runs = useQuery({ queryKey: ["pipeline-runs"], queryFn: listPipelineRuns, refetchInterval: 5000 });
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: listProfiles });
   const connectorRuns = useQuery({
     queryKey: ["connector-runs", activeConnectionId],
@@ -203,9 +201,6 @@ export default function DataHubPage() {
 
   const allDocs = docs.data ?? [];
   const reviewDocs = allDocs.filter((doc) => ["AWAITING_REVIEW", "FAILED"].includes(doc.processing_status));
-  const pipelineAttention = (runs.data ?? []).filter((run) =>
-    ["FAILED", "AWAITING_REVIEW", "COMPLETED_WITH_WARNINGS"].includes(run.current_stage),
-  );
   const activeConnection = (connectors.data ?? []).find((connection) => connection.id === activeConnectionId);
 
   return (
@@ -220,6 +215,12 @@ export default function DataHubPage() {
             <Button>
               <Search className="h-4 w-4" aria-hidden />
               Try Ask
+            </Button>
+          </Link>
+          <Link href="/activity">
+            <Button variant="secondary">
+              <History className="h-4 w-4" aria-hidden />
+              Activity
             </Button>
           </Link>
           <Select className="w-64" value={selectedKbId} onChange={(event) => setSelectedKbId(event.target.value)}>
@@ -283,7 +284,6 @@ export default function DataHubPage() {
         />
         <ReviewPanel
           documents={reviewDocs}
-          pipelines={pipelineAttention}
           selectedDocId={selectedReviewDocId}
           setSelectedDocId={setSelectedReviewDocId}
           qualityReport={qualityReport.data}
@@ -325,6 +325,21 @@ function SourceBuilder({
   const [companyName, setCompanyName] = React.useState("");
   const [mcpConfig, setMcpConfig] = React.useState(DEFAULT_MCP_CONFIG);
   const [isBusy, setIsBusy] = React.useState(false);
+
+  function addFiles(nextFiles: File[]) {
+    setFiles((current) => {
+      const seen = new Set(current.map(fileKey));
+      const merged = [...current];
+      for (const file of nextFiles) {
+        const key = fileKey(file);
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(file);
+        }
+      }
+      return merged;
+    });
+  }
 
   async function uploadAndIndex() {
     if (!selectedKbId || !files.length) return;
@@ -424,7 +439,7 @@ function SourceBuilder({
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
         {[
           { id: "files", label: "Files", icon: UploadCloud },
-          { id: "web", label: "Website", icon: Globe },
+          { id: "web", label: "Web link", icon: Globe },
           { id: "mcp", label: "MCP", icon: Plug },
         ].map((option) => {
           const Icon = option.icon;
@@ -472,12 +487,25 @@ function SourceBuilder({
           <label className="flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-zinc-300 bg-zinc-50 text-center hover:bg-white">
             <UploadCloud className="h-8 w-8 text-zinc-400" aria-hidden />
             <span className="mt-2 text-sm font-medium text-zinc-950">Select files</span>
-            <input className="sr-only" type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
+            <input
+              className="sr-only"
+              type="file"
+              multiple
+              onChange={(event) => {
+                addFiles(Array.from(event.target.files ?? []));
+                event.currentTarget.value = "";
+              }}
+            />
           </label>
           {files.map((file) => (
-            <div key={`${file.name}-${file.size}`} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2">
+            <div key={fileKey(file)} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2">
               <span className="text-sm font-medium text-zinc-800">{file.name}</span>
-              <Badge>{formatBytes(file.size)}</Badge>
+              <div className="flex items-center gap-2">
+                <Badge>{formatBytes(file.size)}</Badge>
+                <Button variant="ghost" size="icon" onClick={() => setFiles((current) => current.filter((item) => fileKey(item) !== fileKey(file)))}>
+                  <X className="h-4 w-4" aria-hidden />
+                </Button>
+              </div>
             </div>
           ))}
           <Button disabled={!selectedKbId || !files.length || isBusy} onClick={uploadAndIndex}>
@@ -490,23 +518,23 @@ function SourceBuilder({
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <div className="space-y-2">
             <Label>Source name</Label>
-            <Input value={connectorName} onChange={(event) => setConnectorName(event.target.value)} />
+            <Input value={connectorName} onChange={(event) => setConnectorName(event.target.value)} placeholder="Website scrape" />
           </div>
           <div className="space-y-2">
             <Label>Company profile name</Label>
             <Input value={companyName} onChange={(event) => setCompanyName(event.target.value)} />
           </div>
           <div className="space-y-2 md:col-span-2">
-            <Label>Seed URLs</Label>
+            <Label>Web links</Label>
             <Input value={seedUrls} onChange={(event) => setSeedUrls(event.target.value)} placeholder="https://example.com, https://example.com/docs" />
           </div>
           <div className="space-y-2 md:col-span-2">
-            <Label>Allowlist domains</Label>
+            <Label>Allowed domains</Label>
             <Input value={allowlist} onChange={(event) => setAllowlist(event.target.value)} placeholder="example.com" />
           </div>
           <Button disabled={!seedUrls || !selectedKbId || isBusy} onClick={() => saveConnector(true)}>
             <Save className="h-4 w-4" aria-hidden />
-            Save and sync
+            Scrape web links and start RAG pipeline
           </Button>
         </div>
       ) : null}
@@ -1233,14 +1261,12 @@ function KnowledgePanel({
 
 function ReviewPanel({
   documents,
-  pipelines,
   selectedDocId,
   setSelectedDocId,
   qualityReport,
   onReview,
 }: {
   documents: DocumentRecord[];
-  pipelines: PipelineRun[];
   selectedDocId: string;
   setSelectedDocId: (value: string) => void;
   qualityReport?: { summary?: string | null; severity: string; requires_review: boolean; issues: Array<Record<string, unknown>> };
@@ -1283,18 +1309,7 @@ function ReviewPanel({
             ) : null}
           </div>
         ))}
-        {pipelines.map((run) => (
-          <Link key={run.id} href={`/pipeline/${run.id}`} className="block rounded-md border border-zinc-200 p-3 hover:bg-zinc-50">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-sm font-medium text-zinc-950">Pipeline {shortDate(run.created_at)}</span>
-              <StatusBadge status={run.current_stage} />
-            </div>
-            <p className="mt-1 text-xs text-zinc-500">
-              {run.processed_count}/{run.total_count} document(s), {run.errors.length} error(s), {run.warnings.length} warning(s)
-            </p>
-          </Link>
-        ))}
-        {!documents.length && !pipelines.length ? <p className="text-sm text-zinc-500">No review items right now.</p> : null}
+        {!documents.length ? <p className="text-sm text-zinc-500">No review items right now. Pipeline logs are in Activity.</p> : null}
       </div>
     </Panel>
   );
@@ -1420,6 +1435,10 @@ function splitList(value: string) {
     .split(/[\n,]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function fileKey(file: File) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 function parseMcpConfig(value: string): Record<string, unknown> {

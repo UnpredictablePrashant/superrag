@@ -63,6 +63,12 @@ def test_workspace_modes_reflect_indexed_and_live_source_readiness() -> None:
     assert modes == ["company_data", "live_web", "mcp_tools", "blended"]
 
 
+def test_workspace_modes_include_openai_web_search_readiness() -> None:
+    modes = _available_answer_modes(2, [], has_openai_web_search=True)
+
+    assert modes == ["company_data", "live_web", "blended"]
+
+
 def test_workspace_chat_model_summary_does_not_report_embedding_fallback() -> None:
     summary = _chat_model_summary(None)
 

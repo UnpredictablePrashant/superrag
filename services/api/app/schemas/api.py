@@ -87,6 +87,9 @@ class KnowledgeBasePatchIn(BaseModel):
     description: str | None = None
     tags: list[str] | None = None
     confidentiality: ConfidentialityLevel | None = None
+    default_cleanup_profile_id: UUID | None = None
+    default_chunking_profile_id: UUID | None = None
+    default_embedding_profile_id: UUID | None = None
     default_retrieval_config: dict[str, Any] | None = None
 
 
@@ -96,6 +99,9 @@ class KnowledgeBaseOut(APIModel):
     description: str | None
     tags: list[str]
     confidentiality: ConfidentialityLevel
+    default_cleanup_profile_id: UUID | None
+    default_chunking_profile_id: UUID | None
+    default_embedding_profile_id: UUID | None
     default_retrieval_config: dict[str, Any]
     created_at: datetime
     updated_at: datetime
@@ -523,6 +529,7 @@ class ChatMessageCreateIn(BaseModel):
     answer_mode: Literal["company_data", "live_web", "mcp_tools", "blended"] | None = None
     use_web_search: bool = False
     use_mcp_tools: bool = False
+    output_format: Literal["chat", "docx", "pdf"] = "chat"
     connector_connection_ids: list[UUID] = []
     debug: bool = False
 

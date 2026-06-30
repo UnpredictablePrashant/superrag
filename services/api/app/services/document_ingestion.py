@@ -25,6 +25,7 @@ RETRIEVAL_DEFAULT_KEYS = {
     "rerank_candidates",
     "rrf_constant",
     "similarity_threshold",
+    "indexing_strategy",
 }
 
 
@@ -97,9 +98,21 @@ def queue_pipeline_for_documents(
     embedding_profile_id: UUID | None = None,
     retrieval_index_config: dict | None = None,
 ) -> PipelineRun:
+    effective_retrieval_config = retrieval_index_config or {"max_chunks": 8, "rrf_constant": 60}
     kb = db.get(KnowledgeBase, knowledge_base_id)
     if kb and kb.organization_id == organization_id:
         apply_retrieval_defaults(kb, retrieval_index_config or {})
+        effective_retrieval_config = {
+            **(kb.default_retrieval_config or {}),
+            **(retrieval_index_config or {}),
+        }
+        cleanup_profile_id = cleanup_profile_id or kb.default_cleanup_profile_id
+        chunking_profile_id = chunking_profile_id or kb.default_chunking_profile_id
+        embedding_profile_id = embedding_profile_id or kb.default_embedding_profile_id
+        if cleanup_profile_id:
+            kb.default_cleanup_profile_id = cleanup_profile_id
+        if chunking_profile_id:
+            kb.default_chunking_profile_id = chunking_profile_id
         if embedding_profile_id:
             kb.default_embedding_profile_id = embedding_profile_id
     run = PipelineRun(
@@ -108,7 +121,7 @@ def queue_pipeline_for_documents(
         cleanup_profile_id=cleanup_profile_id,
         chunking_profile_id=chunking_profile_id,
         embedding_profile_id=embedding_profile_id,
-        retrieval_index_config=retrieval_index_config or {"max_chunks": 8, "rrf_constant": 60},
+        retrieval_index_config=effective_retrieval_config,
         current_stage=PipelineStage.QUEUED,
         total_count=len(document_ids),
         estimated_completion_seconds=max(30, len(document_ids) * 15),

@@ -16,6 +16,8 @@ from app.models.entities import (
     KnowledgeBase,
     ModelProfile,
     Organization,
+    ProviderConnection,
+    ProviderKind,
     PipelineRun,
     PipelineStage,
     ProfileKind,
@@ -122,7 +124,16 @@ def workspace_summary(
         .order_by(ModelProfile.is_default.desc(), ModelProfile.created_at)
         .limit(1)
     )
-    available_modes = _available_answer_modes(indexed_document_count, connector_metadata)
+    has_openai_web_search = db.scalar(
+        select(func.count(ProviderConnection.id)).where(
+            ProviderConnection.organization_id == ctx.organization_id,
+            ProviderConnection.provider == ProviderKind.OPENAI,
+            ProviderConnection.deleted_at.is_(None),
+            ProviderConnection.is_enabled.is_(True),
+            ProviderConnection.encrypted_api_key.is_not(None),
+        )
+    )
+    available_modes = _available_answer_modes(indexed_document_count, connector_metadata, bool(has_openai_web_search))
     return WorkspaceSummaryOut(
         organization=OrganizationOut.model_validate(organization) if organization else None,
         document_count=document_count,
@@ -148,11 +159,15 @@ def workspace_summary(
     )
 
 
-def _available_answer_modes(indexed_document_count: int, connector_metadata: list[dict[str, Any]]) -> list[str]:
+def _available_answer_modes(
+    indexed_document_count: int,
+    connector_metadata: list[dict[str, Any]],
+    has_openai_web_search: bool = False,
+) -> list[str]:
     modes: list[str] = []
     if indexed_document_count:
         modes.append("company_data")
-    has_live_web = any(meta.get("web_search_supported") for meta in connector_metadata)
+    has_live_web = has_openai_web_search or any(meta.get("web_search_supported") for meta in connector_metadata)
     has_mcp = any(meta.get("live_tools_supported") for meta in connector_metadata)
     if has_live_web:
         modes.append("live_web")

@@ -4,6 +4,7 @@ import { ErrorBox } from "@/components/error-box";
 import {
   API_URL,
   api,
+  deleteChatSession,
   getChatSession,
   getWorkspaceSummary,
   listChatSessions,
@@ -12,14 +13,13 @@ import {
   listProfiles,
   saveLiveResult,
 } from "@/lib/api";
-import type { AnswerMode, ChatMessage, Citation } from "@rag-console/shared-types";
+import type { ChatMessage, Citation } from "@rag-console/shared-types";
 import { Badge, Button, Panel, Select, Textarea } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   BookOpen,
-  CheckCircle2,
-  Database,
+  Download,
   Globe,
   MessageSquarePlus,
   Plug,
@@ -29,21 +29,15 @@ import {
 } from "lucide-react";
 import * as React from "react";
 
-const answerModes: Array<{ id: AnswerMode; label: string; icon: typeof Database }> = [
-  { id: "company_data", label: "Company data", icon: Database },
-  { id: "live_web", label: "Live web", icon: Globe },
-  { id: "mcp_tools", label: "MCP tools", icon: Plug },
-  { id: "blended", label: "Blended", icon: CheckCircle2 },
-];
-
 export default function AskPage() {
   const queryClient = useQueryClient();
   const [sessionId, setSessionId] = React.useState("");
   const [prompt, setPrompt] = React.useState("");
   const [selectedKbIds, setSelectedKbIds] = React.useState<string[]>([]);
   const [selectedModelProfileId, setSelectedModelProfileId] = React.useState("");
-  const [answerMode, setAnswerMode] = React.useState<AnswerMode>("company_data");
-  const [selectedConnectorIds, setSelectedConnectorIds] = React.useState<string[]>([]);
+  const [useWebSearch, setUseWebSearch] = React.useState(false);
+  const [useMcpTools, setUseMcpTools] = React.useState(false);
+  const [outputFormat, setOutputFormat] = React.useState<"chat" | "docx" | "pdf">("chat");
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = React.useState("");
   const [selectedCitation, setSelectedCitation] = React.useState<Citation | null>(null);
@@ -81,10 +75,6 @@ export default function AskPage() {
       setSelectedModelProfileId(profiles.data.chat_profiles[0].id);
     }
   }, [profiles.data, selectedModelProfileId]);
-  React.useEffect(() => {
-    const available = summary.data?.available_answer_modes ?? ["company_data"];
-    if (!available.includes(answerMode)) setAnswerMode(available[0] ?? "company_data");
-  }, [answerMode, summary.data?.available_answer_modes]);
 
   const createSession = useMutation({
     mutationFn: () =>
@@ -101,6 +91,25 @@ export default function AskPage() {
       setMessages([]);
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
     },
+  });
+
+  const deleteSession = useMutation({
+    mutationFn: deleteChatSession,
+    onSuccess: (_result, deletedId) => {
+      streamRef.current?.close();
+      streamRef.current = null;
+      setStreamingText("");
+      setSelectedCitation(null);
+      const nextSession = (sessions.data ?? []).find((session) => session.id !== deletedId);
+      if (sessionId === deletedId) {
+        setSessionId(nextSession?.id ?? "");
+        setMessages([]);
+      }
+      queryClient.removeQueries({ queryKey: ["chat-session", deletedId] });
+      queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
+      setNotice("Chat deleted.");
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not delete chat."),
   });
 
   async function sendMessage() {
@@ -137,8 +146,9 @@ export default function AskPage() {
         body: JSON.stringify({
           content: prompt,
           knowledge_base_ids: selectedKbIds,
-          answer_mode: answerMode,
-          connector_connection_ids: selectedConnectorIds,
+          use_web_search: useWebSearch,
+          use_mcp_tools: useMcpTools,
+          output_format: outputFormat,
         }),
       });
       setMessages((current) => [...current, turn.user_message]);
@@ -170,6 +180,13 @@ export default function AskPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send message.");
     }
+  }
+
+  function confirmDeleteSession(id: string) {
+    if (!window.confirm("Delete this chat?")) return;
+    setError("");
+    setNotice("");
+    deleteSession.mutate(id);
   }
 
   async function saveCitation(citation: Citation) {
@@ -206,14 +223,17 @@ export default function AskPage() {
 
   const selectedKbName = kbs.data?.filter((kb) => selectedKbIds.includes(kb.id)).map((kb) => kb.name).join(", ");
   const selectedModel = profiles.data?.chat_profiles.find((profile) => profile.id === selectedModelProfileId);
-  const activeConnectors = (connectors.data ?? []).filter((connection) => connection.kind === "mcp" && connection.is_enabled);
-  const modeConnectors = activeConnectors.filter((connection) =>
-    answerMode === "live_web" ? connection.web_search_supported : true,
-  );
   const availableModes = summary.data?.available_answer_modes ?? ["company_data"];
-  function toggleConnector(id: string) {
-    setSelectedConnectorIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
-  }
+  const canUseWebSearch = availableModes.includes("live_web") || availableModes.includes("blended");
+  const canUseMcpTools = availableModes.includes("mcp_tools") || availableModes.includes("blended");
+  const activeMcpConnectors = (connectors.data ?? []).filter((connection) => connection.kind === "mcp" && connection.is_enabled);
+  const activeMcpToolCount = activeMcpConnectors.reduce((total, connection) => total + connection.tool_count, 0);
+  const webSearchDisabled = !canUseWebSearch;
+  const mcpToolsDisabled = !canUseMcpTools || activeMcpToolCount === 0;
+  React.useEffect(() => {
+    if (webSearchDisabled && useWebSearch) setUseWebSearch(false);
+    if (mcpToolsDisabled && useMcpTools) setUseMcpTools(false);
+  }, [mcpToolsDisabled, useMcpTools, useWebSearch, webSearchDisabled]);
 
   return (
     <div className="grid h-[calc(100vh-112px)] min-h-[680px] gap-4 xl:grid-cols-[280px_1fr_360px]">
@@ -238,15 +258,26 @@ export default function AskPage() {
         </div>
         <div className="min-h-0 flex-1 overflow-auto p-2">
           {(sessions.data ?? []).map((session) => (
-            <button
+            <div
               key={session.id}
-              className={`w-full rounded-md px-3 py-2 text-left text-sm ${
+              className={`group flex items-center gap-1 rounded-md ${
                 sessionId === session.id ? "bg-emerald-50 text-emerald-800" : "text-zinc-700 hover:bg-zinc-100"
               }`}
-              onClick={() => setSessionId(session.id)}
             >
-              {session.title}
-            </button>
+              <button className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm" onClick={() => setSessionId(session.id)}>
+                {session.title}
+              </button>
+              <Button
+                aria-label={`Delete ${session.title}`}
+                className="mr-1 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                disabled={deleteSession.isPending}
+                size="icon"
+                variant="ghost"
+                onClick={() => confirmDeleteSession(session.id)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden />
+              </Button>
+            </div>
           ))}
         </div>
       </Panel>
@@ -260,26 +291,23 @@ export default function AskPage() {
             </div>
             <Badge tone="blue">{selectedModel ? `${selectedModel.provider} / ${selectedModel.model_name}` : "Local fallback"}</Badge>
           </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-            {answerModes.map((mode) => {
-              const Icon = mode.icon;
-              const disabled = !availableModes.includes(mode.id);
-              return (
-                <button
-                  key={mode.id}
-                  disabled={disabled}
-                  className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium ${
-                    answerMode === mode.id
-                      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
-                      : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
-                  } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
-                  onClick={() => setAnswerMode(mode.id)}
-                >
-                  <Icon className="h-4 w-4" aria-hidden />
-                  {mode.label}
-                </button>
-              );
-            })}
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            <LiveOption
+              checked={useWebSearch}
+              disabled={webSearchDisabled}
+              icon={Globe}
+              label="OpenAI web search"
+              meta={webSearchDisabled ? "Add an OpenAI provider key" : "Uses hosted OpenAI search"}
+              onChange={setUseWebSearch}
+            />
+            <LiveOption
+              checked={useMcpTools}
+              disabled={mcpToolsDisabled}
+              icon={Plug}
+              label="MCP tools"
+              meta={`${activeMcpToolCount} active tool${activeMcpToolCount === 1 ? "" : "s"}`}
+              onChange={setUseMcpTools}
+            />
           </div>
         </div>
         <div className="min-h-0 flex-1 space-y-4 overflow-auto bg-zinc-50 p-5">
@@ -315,8 +343,13 @@ export default function AskPage() {
             }}
           />
           <div className="mt-3 flex items-center justify-between gap-3">
-            <span className="text-xs text-zinc-500">{modeLabel(answerMode)}</span>
+            <span className="text-xs text-zinc-500">{toolStatusLabel(useWebSearch, useMcpTools)}</span>
             <div className="flex gap-2">
+              <Select className="h-10 w-32" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as "chat" | "docx" | "pdf")}>
+                <option value="chat">Chat</option>
+                <option value="pdf">PDF</option>
+                <option value="docx">DOCX</option>
+              </Select>
               <Button variant="secondary" onClick={stopStream}>
                 <Square className="h-4 w-4" aria-hidden />
                 Stop
@@ -336,6 +369,33 @@ export default function AskPage() {
           <p className="mt-1 text-xs text-zinc-500">Narrow the answer surface before retrieval runs.</p>
         </div>
         <div className="min-h-0 flex-1 space-y-5 overflow-auto p-4">
+          <div className="space-y-3">
+            <p className="text-sm font-medium text-zinc-800">Live options</p>
+            <LiveOption
+              checked={useWebSearch}
+              disabled={webSearchDisabled}
+              icon={Globe}
+              label="OpenAI web search"
+              meta={webSearchDisabled ? "Unavailable" : "Enabled when checked"}
+              onChange={setUseWebSearch}
+            />
+            <LiveOption
+              checked={useMcpTools}
+              disabled={mcpToolsDisabled}
+              icon={Plug}
+              label="MCP"
+              meta={`${activeMcpToolCount} active tool${activeMcpToolCount === 1 ? "" : "s"}`}
+              onChange={setUseMcpTools}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-zinc-800">Response format</label>
+            <Select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as "chat" | "docx" | "pdf")}>
+              <option value="chat">Chat answer</option>
+              <option value="pdf">PDF download</option>
+              <option value="docx">DOCX download</option>
+            </Select>
+          </div>
           <div className="space-y-2">
             <label className="text-sm font-medium text-zinc-800">Knowledge base</label>
             <Select
@@ -360,26 +420,6 @@ export default function AskPage() {
               ))}
             </Select>
           </div>
-          {answerMode !== "company_data" ? (
-            <div className="space-y-3 rounded-md border border-zinc-200 p-3">
-              <p className="text-sm font-medium text-zinc-800">Live connectors</p>
-              {modeConnectors.length ? (
-                modeConnectors.map((connection) => (
-                  <label key={connection.id} className="flex items-center justify-between gap-3 text-sm text-zinc-700">
-                    <span className="flex items-center gap-2">
-                      <input type="checkbox" checked={selectedConnectorIds.includes(connection.id)} onChange={() => toggleConnector(connection.id)} />
-                      {connection.name}
-                    </span>
-                    <Badge tone={connection.web_search_supported ? "blue" : "green"}>
-                      {connection.web_search_supported ? "web" : "mcp"}
-                    </Badge>
-                  </label>
-                ))
-              ) : (
-                <p className="text-sm text-zinc-500">No enabled connector supports this mode yet.</p>
-              )}
-            </div>
-          ) : null}
           {selectedCitation ? (
             <div className="rounded-md border border-zinc-200 p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -416,6 +456,43 @@ export default function AskPage() {
   );
 }
 
+function LiveOption({
+  checked,
+  disabled,
+  icon: Icon,
+  label,
+  meta,
+  onChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  icon: typeof Globe;
+  label: string;
+  meta: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label
+      className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 ${
+        checked ? "border-emerald-300 bg-emerald-50" : "border-zinc-200 bg-white"
+      } ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-zinc-50"}`}
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <input
+          checked={checked}
+          className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500"
+          disabled={disabled}
+          type="checkbox"
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        <Icon className="h-4 w-4 flex-none text-zinc-500" aria-hidden />
+        <span className="truncate text-sm font-medium text-zinc-800">{label}</span>
+      </span>
+      <span className="flex-none text-xs text-zinc-500">{meta}</span>
+    </label>
+  );
+}
+
 function ReadinessStat({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-md bg-zinc-50 px-3 py-2">
@@ -428,10 +505,21 @@ function ReadinessStat({ label, value }: { label: string; value: number }) {
 function MessageBubble({ message, onCitation }: { message: ChatMessage; onCitation: (citation: Citation) => void }) {
   const isUser = message.role === "user";
   const groups = groupCitations(message.citations ?? []);
+  const exportFormat = typeof message.metadata?.requested_export_format === "string" ? message.metadata.requested_export_format : "";
+  const exportUrl = typeof message.metadata?.export_url === "string" ? message.metadata.export_url : "";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div className={`max-w-3xl rounded-md p-4 shadow-sm ${isUser ? "bg-emerald-700 text-white" : "bg-white text-zinc-900"}`}>
         <p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
+        {!isUser && exportUrl ? (
+          <a
+            className="mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50"
+            href={`${API_URL}${exportUrl}`}
+          >
+            <Download className="h-4 w-4" aria-hidden />
+            Download {exportFormat.toUpperCase() || "file"}
+          </a>
+        ) : null}
         {!isUser && message.citations?.length ? (
           <div className="mt-4 space-y-3">
             {groups.map((group) => (
@@ -459,7 +547,7 @@ function MessageBubble({ message, onCitation }: { message: ChatMessage; onCitati
 }
 
 function groupCitations(citations: Citation[]) {
-  const order = ["Indexed KB", "Live Web", "MCP"];
+  const order = ["Indexed KB", "OpenAI Web", "Live Web", "MCP"];
   const buckets = new Map<string, Citation[]>();
   for (const citation of citations) {
     const label = citation.source_type ?? "Indexed KB";
@@ -472,13 +560,13 @@ function groupCitations(citations: Citation[]) {
 
 function sourceTone(sourceType?: string | null) {
   if (sourceType === "Indexed KB") return "blue";
-  if (sourceType === "Live Web") return "amber";
+  if (sourceType === "OpenAI Web" || sourceType === "Live Web") return "amber";
   return "green";
 }
 
-function modeLabel(mode: AnswerMode) {
-  if (mode === "company_data") return "Using indexed company data only.";
-  if (mode === "live_web") return "Using live web-capable MCP tools only.";
-  if (mode === "mcp_tools") return "Using read-only MCP tools only.";
-  return "Using indexed company data plus live tools.";
+function toolStatusLabel(useWebSearch: boolean, useMcpTools: boolean) {
+  if (useWebSearch && useMcpTools) return "Using company data with OpenAI web search and MCP tools.";
+  if (useWebSearch) return "Using company data with OpenAI web search.";
+  if (useMcpTools) return "Using company data with MCP tools.";
+  return "Using indexed company data only.";
 }

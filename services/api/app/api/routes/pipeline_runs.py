@@ -56,8 +56,12 @@ def create_pipeline_run(
     )
     if len(documents) != len(payload.document_ids):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="One or more documents were not found.")
-    if payload.embedding_profile_id:
-        embedding_profile = db.get(EmbeddingProfile, payload.embedding_profile_id)
+    cleanup_profile_id = payload.cleanup_profile_id or kb.default_cleanup_profile_id
+    chunking_profile_id = payload.chunking_profile_id or kb.default_chunking_profile_id
+    embedding_profile_id = payload.embedding_profile_id or kb.default_embedding_profile_id
+    effective_retrieval_config = {**(kb.default_retrieval_config or {}), **payload.retrieval_index_config}
+    if embedding_profile_id:
+        embedding_profile = db.get(EmbeddingProfile, embedding_profile_id)
         if (
             not embedding_profile
             or embedding_profile.organization_id != ctx.organization_id
@@ -71,10 +75,10 @@ def create_pipeline_run(
     run = PipelineRun(
         organization_id=ctx.organization_id,
         knowledge_base_id=payload.knowledge_base_id,
-        cleanup_profile_id=payload.cleanup_profile_id,
-        chunking_profile_id=payload.chunking_profile_id,
-        embedding_profile_id=payload.embedding_profile_id,
-        retrieval_index_config=payload.retrieval_index_config,
+        cleanup_profile_id=cleanup_profile_id,
+        chunking_profile_id=chunking_profile_id,
+        embedding_profile_id=embedding_profile_id,
+        retrieval_index_config=effective_retrieval_config,
         current_stage=PipelineStage.QUEUED,
         total_count=len(documents),
         estimated_completion_seconds=max(30, len(documents) * 15),

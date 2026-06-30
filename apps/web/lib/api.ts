@@ -288,6 +288,28 @@ export function listKnowledgeBases() {
   return api<KnowledgeBase[]>("/knowledge-bases");
 }
 
+export function updateKnowledgeBase(
+  id: string,
+  payload: Partial<
+    Pick<
+      KnowledgeBase,
+      | "name"
+      | "description"
+      | "tags"
+      | "confidentiality"
+      | "default_cleanup_profile_id"
+      | "default_chunking_profile_id"
+      | "default_embedding_profile_id"
+      | "default_retrieval_config"
+    >
+  >,
+) {
+  return api<KnowledgeBase>(`/knowledge-bases/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listDocuments(knowledgeBaseId?: string) {
   const qs = knowledgeBaseId ? `?knowledge_base_id=${knowledgeBaseId}` : "";
   return api<DocumentRecord[]>(`/documents${qs}`);
@@ -398,6 +420,10 @@ export function listChatSessions() {
 
 export function getChatSession(id: string) {
   return api<{ session: { model_profile_id?: string | null }; messages: ChatMessage[] }>(`/chat-sessions/${id}`);
+}
+
+export function deleteChatSession(id: string) {
+  return api<{ message: string }>(`/chat-sessions/${id}`, { method: "DELETE" });
 }
 
 export function listProfiles() {

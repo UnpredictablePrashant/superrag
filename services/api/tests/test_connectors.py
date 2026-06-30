@@ -1,7 +1,8 @@
 from app.services.connectors import (
+    _connector_supports_web_search,
     _mcp_http_server_config,
-    _mcp_transport,
     _mcp_stdio_server_config,
+    _mcp_transport,
     is_mcp_tool_read_only,
     normalize_connector_config,
     normalize_web_document,
@@ -152,3 +153,14 @@ def test_mcp_tool_filtering_respects_disabled_tools() -> None:
         use_web_search=False,
         use_mcp_tools=True,
     )
+
+
+def test_mcp_web_search_capability_requires_search_tool() -> None:
+    class Connection:
+        kind = "mcp"
+        config = {}
+
+    assert not _connector_supports_web_search(Connection(), set())
+
+    Connection.config = {"discovered_tools": [{"name": "search_web"}]}
+    assert _connector_supports_web_search(Connection(), set())

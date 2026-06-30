@@ -38,6 +38,9 @@ export interface KnowledgeBase {
   description?: string | null;
   tags: string[];
   confidentiality: Confidentiality;
+  default_cleanup_profile_id?: string | null;
+  default_chunking_profile_id?: string | null;
+  default_embedding_profile_id?: string | null;
   default_retrieval_config: Record<string, unknown>;
   created_at: string;
   updated_at: string;

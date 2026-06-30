@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime
+from io import BytesIO
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,9 +24,11 @@ from app.schemas.api import (
     ChatSessionPatchIn,
     ChatTurnOut,
 )
+from app.services.answer_exports import build_answer_export, requested_export_format
 from app.services.chat import generate_grounded_answer
 from app.services.connectors import live_connector_candidates
 from app.services.model_runtime import resolve_chat_model
+from app.services.openai_web_search import openai_web_search_candidates
 from app.services.retrieval import Candidate, retrieve
 
 router = APIRouter(prefix="/chat-sessions", tags=["chat"])
@@ -196,7 +200,33 @@ def create_chat_message(
         )
         db.add(event)
     db.flush()
-    if filters.get("use_web_search") or filters.get("use_mcp_tools"):
+    chat_model = resolve_chat_model(db, ctx.organization_id, session.model_profile_id)
+    if filters.get("use_web_search"):
+        require_capability(ctx.role or "", "use_live_tools")
+        try:
+            web_candidates = openai_web_search_candidates(
+                db,
+                organization_id=ctx.organization_id,
+                query=payload.content,
+                preferred_model=chat_model.model_name if chat_model.provider == "OpenAI" else None,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail=f"OpenAI web search failed: {str(exc)[:300]}",
+            ) from exc
+        candidates = _merge_live_candidates(candidates, web_candidates)
+        if web_candidates:
+            event.applied_filters = {
+                **event.applied_filters,
+                "use_web_search": True,
+                "web_search_provider": "OpenAI",
+            }
+            event.final_context_chunks = [
+                *event.final_context_chunks,
+                *[_candidate_debug(candidate) for candidate in web_candidates],
+            ]
+    if filters.get("use_mcp_tools"):
         require_capability(ctx.role or "", "use_live_tools")
         try:
             live_candidates = live_connector_candidates(
@@ -204,7 +234,7 @@ def create_chat_message(
                 organization_id=ctx.organization_id,
                 user_id=ctx.user.id,
                 query=payload.content,
-                use_web_search=use_web_search,
+                use_web_search=False,
                 use_mcp_tools=use_mcp_tools,
                 connector_connection_ids=[str(value) for value in filters.get("connector_connection_ids", [])],
                 chat_session_id=session.id,
@@ -220,7 +250,6 @@ def create_chat_message(
         if live_candidates:
             event.applied_filters = {
                 **event.applied_filters,
-                "use_web_search": bool(filters.get("use_web_search")),
                 "use_mcp_tools": bool(filters.get("use_mcp_tools")),
                 "connector_connection_ids": [str(value) for value in filters.get("connector_connection_ids", [])],
             }
@@ -228,7 +257,6 @@ def create_chat_message(
                 *event.final_context_chunks,
                 *[_candidate_debug(candidate) for candidate in live_candidates],
             ]
-    chat_model = resolve_chat_model(db, ctx.organization_id, session.model_profile_id)
     try:
         answer = generate_grounded_answer(payload.content, candidates, chat_model)
     except Exception as exc:
@@ -236,21 +264,30 @@ def create_chat_message(
             status.HTTP_502_BAD_GATEWAY,
             detail=f"Selected chat model failed: {str(exc)[:300]}",
         ) from exc
+    requested_format = payload.output_format if payload.output_format != "chat" else requested_export_format(payload.content)
+    assistant_metadata = {
+        "retrieval_event_id": str(event.id),
+        "provider": chat_model.provider,
+        "model": chat_model.model_name,
+        "model_profile_id": chat_model.profile_id,
+        "suggested_questions": answer.suggested_questions,
+    }
     assistant_message = ChatMessage(
         organization_id=ctx.organization_id,
         chat_session_id=session.id,
         role="assistant",
         content=answer.answer,
         citations=answer.citations,
-        metadata_json={
-            "retrieval_event_id": str(event.id),
-            "provider": chat_model.provider,
-            "model": chat_model.model_name,
-            "model_profile_id": chat_model.profile_id,
-            "suggested_questions": answer.suggested_questions,
-        },
+        metadata_json=assistant_metadata,
     )
     db.add(assistant_message)
+    db.flush()
+    if requested_format:
+        assistant_message.metadata_json = {
+            **assistant_metadata,
+            "requested_export_format": requested_format,
+            "export_url": f"/chat-sessions/{session.id}/messages/{assistant_message.id}/export?format={requested_format}",
+        }
     if session.title == "New chat":
         session.title = payload.content[:80]
     db.commit()
@@ -261,6 +298,36 @@ def create_chat_message(
         assistant_message=ChatMessageOut.model_validate(assistant_message),
         retrieval_event_id=event.id,
         suggested_questions=answer.suggested_questions,
+    )
+
+
+@router.get("/{chat_session_id}/messages/{message_id}/export")
+def export_chat_message(
+    chat_session_id: UUID,
+    message_id: UUID,
+    format: Literal["docx", "pdf"] = Query(...),
+    ctx: AuthContext = Depends(capability("chat")),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    session = _get_session(db, ctx, chat_session_id)
+    message = db.get(ChatMessage, message_id)
+    if (
+        not message
+        or message.organization_id != ctx.organization_id
+        or message.chat_session_id != session.id
+        or message.role != "assistant"
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat message not found.")
+    export = build_answer_export(
+        export_format=format,
+        title=session.title or "Chat answer",
+        answer=message.content,
+        citations=message.citations or [],
+    )
+    return StreamingResponse(
+        BytesIO(export.data),
+        media_type=export.media_type,
+        headers={"Content-Disposition": f'attachment; filename="{export.filename}"'},
     )
 
 

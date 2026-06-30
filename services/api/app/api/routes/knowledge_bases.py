@@ -18,6 +18,7 @@ from app.schemas.api import (
     KnowledgeBasePatchIn,
 )
 from app.services.audit import write_audit_log
+from app.services.profiles import default_pipeline_profile_ids
 
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
 
@@ -42,19 +43,26 @@ def create_knowledge_base(
     ctx: AuthContext = Depends(capability("create_knowledge_bases")),
     db: Session = Depends(get_db),
 ) -> KnowledgeBase:
+    default_profiles = default_pipeline_profile_ids(db, ctx.organization_id)
     kb = KnowledgeBase(
         organization_id=ctx.organization_id,
         name=payload.name,
         description=payload.description,
         owner_user_id=ctx.user.id,
+        default_cleanup_profile_id=default_profiles.get("cleanup_profile_id"),
+        default_chunking_profile_id=default_profiles.get("chunking_profile_id"),
+        default_embedding_profile_id=default_profiles.get("embedding_profile_id"),
         tags=payload.tags,
         confidentiality=payload.confidentiality,
         default_retrieval_config={
+            "retrieval_algorithm": "hybrid_rrf",
             "vector_candidate_count": 40,
             "keyword_candidate_count": 40,
+            "rerank_candidates": 20,
             "rrf_constant": 60,
             "max_chunks": 8,
             "similarity_threshold": 0.1,
+            "indexing_strategy": "full_replace_chunks_and_vectors",
         },
     )
     db.add(kb)

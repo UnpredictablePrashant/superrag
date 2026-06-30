@@ -1042,9 +1042,12 @@ def _connector_supports_web_search(connection: ConnectorConnection, configured_t
         for tags in configured_tags.values():
             if isinstance(tags, list) and any(str(tag).lower() == "web_search" for tag in tags):
                 return True
-    if any("web" in name or "search" in name for name in configured_tool_names):
-        return True
-    return not configured_tool_names
+    discovered_tool_names = {
+        str(tool.get("name") or "").lower()
+        for tool in connection.config.get("discovered_tools", [])
+        if isinstance(tool, dict)
+    }
+    return any("web" in name or "search" in name for name in {*configured_tool_names, *discovered_tool_names})
 
 
 def _looks_like_lookup_tool(name: str) -> bool:

@@ -104,3 +104,35 @@ def ensure_default_profiles(db: Session, organization_id: UUID | None = None) ->
                 is_active=True,
             )
         )
+
+
+def default_pipeline_profile_ids(db: Session, organization_id: UUID) -> dict[str, UUID | None]:
+    ensure_default_profiles(db, organization_id)
+    db.flush()
+    cleanup = db.scalar(
+        select(CleanupProfile)
+        .where(CleanupProfile.organization_id == organization_id, CleanupProfile.deleted_at.is_(None))
+        .order_by(
+            (CleanupProfile.name == "Standard Enterprise Cleanup").desc(),
+            CleanupProfile.created_at,
+        )
+    )
+    chunking = db.scalar(
+        select(ChunkingProfile)
+        .where(ChunkingProfile.organization_id == organization_id, ChunkingProfile.deleted_at.is_(None))
+        .order_by(
+            (ChunkingProfile.name == "Document-Aware Chunking").desc(),
+            (ChunkingProfile.name == "Recursive Token Chunking").desc(),
+            ChunkingProfile.created_at,
+        )
+    )
+    embedding = db.scalar(
+        select(EmbeddingProfile)
+        .where(EmbeddingProfile.organization_id == organization_id, EmbeddingProfile.deleted_at.is_(None))
+        .order_by(EmbeddingProfile.is_active.desc(), EmbeddingProfile.created_at)
+    )
+    return {
+        "cleanup_profile_id": cleanup.id if cleanup else None,
+        "chunking_profile_id": chunking.id if chunking else None,
+        "embedding_profile_id": embedding.id if embedding else None,
+    }

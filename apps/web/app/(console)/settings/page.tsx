@@ -6,10 +6,11 @@ import {
   api,
   getTelegramIntegration,
   listConnectors,
-  listProfiles,
   listKnowledgeBases,
+  listProfiles,
   listProviderModels,
   listTelegramAllowedUsers,
+  updateKnowledgeBase,
   ConnectorConnection,
   ConnectorRun,
   ModelOption,
@@ -24,6 +25,7 @@ import { Bell, Bot, Globe, History, KeyRound, Play, Plug, RotateCw, Save, Send, 
 import * as React from "react";
 
 const tabs = [
+  "RAG Settings",
   "Organization",
   "AI Providers",
   "Model Profiles",
@@ -48,7 +50,7 @@ const DEFAULT_MCP_CONFIG = `{
 }`;
 
 export default function SettingsPage() {
-  const [tab, setTab] = React.useState("AI Providers");
+  const [tab, setTab] = React.useState("RAG Settings");
   return (
     <div className="space-y-6">
       <div>
@@ -68,6 +70,7 @@ export default function SettingsPage() {
           </button>
         ))}
       </div>
+      {tab === "RAG Settings" ? <RagSettings /> : null}
       {tab === "Organization" ? <OrganizationSettings /> : null}
       {tab === "AI Providers" ? <ProviderSettings /> : null}
       {tab === "Model Profiles" ? <ProfileSettings /> : null}
@@ -78,6 +81,285 @@ export default function SettingsPage() {
       {tab === "Audit Logs" ? <AuditLogs /> : null}
     </div>
   );
+}
+
+function RagSettings() {
+  const queryClient = useQueryClient();
+  const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
+  const profiles = useQuery({ queryKey: ["profiles"], queryFn: listProfiles });
+  const [selectedKbId, setSelectedKbId] = React.useState("");
+  const [cleanupProfileId, setCleanupProfileId] = React.useState("");
+  const [chunkingProfileId, setChunkingProfileId] = React.useState("");
+  const [embeddingProfileId, setEmbeddingProfileId] = React.useState("");
+  const [retrievalAlgorithm, setRetrievalAlgorithm] = React.useState("hybrid_rrf");
+  const [maxChunks, setMaxChunks] = React.useState("8");
+  const [vectorCandidates, setVectorCandidates] = React.useState("40");
+  const [keywordCandidates, setKeywordCandidates] = React.useState("40");
+  const [rerankCandidates, setRerankCandidates] = React.useState("20");
+  const [rrfConstant, setRrfConstant] = React.useState("60");
+  const [similarityThreshold, setSimilarityThreshold] = React.useState("0.1");
+  const [indexingStrategy, setIndexingStrategy] = React.useState("full_replace_chunks_and_vectors");
+  const [error, setError] = React.useState("");
+  const [notice, setNotice] = React.useState("");
+
+  const selectedKb = (kbs.data ?? []).find((kb) => kb.id === selectedKbId);
+
+  React.useEffect(() => {
+    if (!selectedKbId && kbs.data?.[0]) setSelectedKbId(kbs.data[0].id);
+  }, [kbs.data, selectedKbId]);
+
+  React.useEffect(() => {
+    if (!profiles.data) return;
+    const recommended = recommendedRagDefaults(profiles.data);
+    setCleanupProfileId(selectedKb?.default_cleanup_profile_id ?? recommended.cleanupProfileId);
+    setChunkingProfileId(selectedKb?.default_chunking_profile_id ?? recommended.chunkingProfileId);
+    setEmbeddingProfileId(selectedKb?.default_embedding_profile_id ?? recommended.embeddingProfileId);
+    const config = selectedKb?.default_retrieval_config ?? {};
+    setRetrievalAlgorithm(stringSetting(config.retrieval_algorithm, "hybrid_rrf"));
+    setMaxChunks(stringSetting(config.max_chunks, "8"));
+    setVectorCandidates(stringSetting(config.vector_candidate_count, "40"));
+    setKeywordCandidates(stringSetting(config.keyword_candidate_count, "40"));
+    setRerankCandidates(stringSetting(config.rerank_candidates, "20"));
+    setRrfConstant(stringSetting(config.rrf_constant, "60"));
+    setSimilarityThreshold(stringSetting(config.similarity_threshold, "0.1"));
+    setIndexingStrategy(stringSetting(config.indexing_strategy, "full_replace_chunks_and_vectors"));
+  }, [profiles.data, selectedKb]);
+
+  function applyRecommended() {
+    if (!profiles.data) return;
+    const recommended = recommendedRagDefaults(profiles.data);
+    setCleanupProfileId(recommended.cleanupProfileId);
+    setChunkingProfileId(recommended.chunkingProfileId);
+    setEmbeddingProfileId(recommended.embeddingProfileId);
+    setRetrievalAlgorithm("hybrid_rrf");
+    setMaxChunks("8");
+    setVectorCandidates("40");
+    setKeywordCandidates("40");
+    setRerankCandidates("20");
+    setRrfConstant("60");
+    setSimilarityThreshold("0.1");
+    setIndexingStrategy("full_replace_chunks_and_vectors");
+  }
+
+  async function saveDefaults() {
+    if (!selectedKbId) {
+      setError("Select a knowledge base first.");
+      return;
+    }
+    setError("");
+    setNotice("");
+    try {
+      await updateKnowledgeBase(selectedKbId, {
+        default_cleanup_profile_id: cleanupProfileId || null,
+        default_chunking_profile_id: chunkingProfileId || null,
+        default_embedding_profile_id: embeddingProfileId || null,
+        default_retrieval_config: {
+          retrieval_algorithm: retrievalAlgorithm,
+          max_chunks: numberOrDefault(maxChunks, 8),
+          vector_candidate_count: numberOrDefault(vectorCandidates, 40),
+          keyword_candidate_count: numberOrDefault(keywordCandidates, 40),
+          rerank_candidates: numberOrDefault(rerankCandidates, 20),
+          rrf_constant: numberOrDefault(rrfConstant, 60),
+          similarity_threshold: decimalOrDefault(similarityThreshold, 0.1),
+          indexing_strategy: indexingStrategy,
+        },
+      });
+      setNotice("RAG defaults saved. Data Hub uploads and web syncs will use these settings.");
+      queryClient.invalidateQueries({ queryKey: ["knowledge-bases"] });
+      queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save RAG settings.");
+    }
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
+      <Panel className="p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <SlidersHorizontal className="h-5 w-5 text-emerald-700" aria-hidden />
+              <h3 className="font-semibold text-zinc-950">RAG Settings</h3>
+            </div>
+            <p className="mt-1 text-sm text-zinc-500">Default processing pipeline used by Data Hub uploads, web syncs, reindexing, and Ask retrieval.</p>
+          </div>
+          <Button variant="secondary" onClick={applyRecommended}>
+            Recommended defaults
+          </Button>
+        </div>
+        <ErrorBox message={error} />
+        {notice ? <div className="mt-3 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div> : null}
+        <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <div className="space-y-2 md:col-span-2">
+            <Label>Knowledge base</Label>
+            <Select value={selectedKbId} onChange={(event) => setSelectedKbId(event.target.value)}>
+              <option value="">Select knowledge base</option>
+              {(kbs.data ?? []).map((kb) => (
+                <option key={kb.id} value={kb.id}>
+                  {kb.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <ProfileSelect label="Cleaning" value={cleanupProfileId} onChange={setCleanupProfileId} options={profiles.data?.cleanup_profiles ?? []} />
+          <ProfileSelect label="Chunking" value={chunkingProfileId} onChange={setChunkingProfileId} options={profiles.data?.chunking_profiles ?? []} />
+          <ProfileSelect
+            label="Embedding"
+            value={embeddingProfileId}
+            onChange={setEmbeddingProfileId}
+            options={(profiles.data?.embedding_profiles ?? []).map((profile) => ({
+              id: profile.id,
+              name: `${profile.name} / ${profile.model_name}`,
+            }))}
+          />
+          <div className="space-y-2">
+            <Label>Retrieval</Label>
+            <Select value={retrievalAlgorithm} onChange={(event) => setRetrievalAlgorithm(event.target.value)}>
+              <option value="hybrid_rrf">Hybrid RRF</option>
+              <option value="vector">Vector only</option>
+              <option value="keyword">Keyword only</option>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Indexing</Label>
+            <Select value={indexingStrategy} onChange={(event) => setIndexingStrategy(event.target.value)}>
+              <option value="full_replace_chunks_and_vectors">Full reindex</option>
+              <option value="incremental_new_documents">Incremental new documents</option>
+              <option value="embedding_backfill">Embedding backfill</option>
+            </Select>
+          </div>
+          <NumberField label="Answer chunks" value={maxChunks} onChange={setMaxChunks} min={1} max={30} />
+          <NumberField label="Vector candidates" value={vectorCandidates} onChange={setVectorCandidates} min={1} max={200} />
+          <NumberField label="Keyword candidates" value={keywordCandidates} onChange={setKeywordCandidates} min={1} max={200} />
+          <NumberField label="Rerank candidates" value={rerankCandidates} onChange={setRerankCandidates} min={1} max={100} />
+          <NumberField label="RRF constant" value={rrfConstant} onChange={setRrfConstant} min={1} max={200} />
+          <NumberField label="Similarity threshold" value={similarityThreshold} onChange={setSimilarityThreshold} min={0} max={1} step="0.01" />
+        </div>
+        <Button className="mt-5" disabled={!selectedKbId} onClick={saveDefaults}>
+          <Save className="h-4 w-4" aria-hidden />
+          Save RAG defaults
+        </Button>
+      </Panel>
+
+      <Panel className="p-5">
+        <h3 className="font-semibold text-zinc-950">Current default flow</h3>
+        <div className="mt-4 space-y-3 text-sm">
+          <RagFlowStep label="1. Clean" value={profileName(profiles.data?.cleanup_profiles, cleanupProfileId)} />
+          <RagFlowStep label="2. Chunk" value={profileName(profiles.data?.chunking_profiles, chunkingProfileId)} />
+          <RagFlowStep label="3. Embed" value={profileName(profiles.data?.embedding_profiles, embeddingProfileId)} />
+          <RagFlowStep label="4. Index" value={indexingStrategyLabel(indexingStrategy)} />
+          <RagFlowStep label="5. Retrieve" value={`${retrievalAlgorithmLabel(retrievalAlgorithm)} / ${maxChunks} chunks`} />
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function ProfileSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ id: string; name: string }>;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Select value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">Recommended default</option>
+        {options.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.name}
+          </option>
+        ))}
+      </Select>
+    </div>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  min: number;
+  max: number;
+  step?: number | string;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Input type="number" value={value} onChange={(event) => onChange(event.target.value)} min={min} max={max} step={step} />
+    </div>
+  );
+}
+
+function RagFlowStep({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-zinc-200 p-3">
+      <p className="text-xs font-medium uppercase text-zinc-500">{label}</p>
+      <p className="mt-1 font-medium text-zinc-950">{value || "Recommended default"}</p>
+    </div>
+  );
+}
+
+function recommendedRagDefaults(profiles: ProfilesResponse) {
+  const cleanup =
+    profiles.cleanup_profiles.find((profile) => profile.name === "Standard Enterprise Cleanup") ??
+    profiles.cleanup_profiles[1] ??
+    profiles.cleanup_profiles[0];
+  const chunking =
+    profiles.chunking_profiles.find((profile) => profile.name === "Document-Aware Chunking") ??
+    profiles.chunking_profiles.find((profile) => profile.name === "Recursive Token Chunking") ??
+    profiles.chunking_profiles[0];
+  const embedding = profiles.embedding_profiles.find((profile) => profile.is_active) ?? profiles.embedding_profiles[0];
+  return {
+    cleanupProfileId: cleanup?.id ?? "",
+    chunkingProfileId: chunking?.id ?? "",
+    embeddingProfileId: embedding?.id ?? "",
+  };
+}
+
+function profileName(profiles: Array<{ id: string; name: string }> | undefined, id: string) {
+  return profiles?.find((profile) => profile.id === id)?.name ?? "Recommended default";
+}
+
+function stringSetting(value: unknown, fallback: string) {
+  if (typeof value === "string" && value) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return fallback;
+}
+
+function numberOrDefault(value: string, fallback: number) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function decimalOrDefault(value: string, fallback: number) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function indexingStrategyLabel(value: string) {
+  if (value === "incremental_new_documents") return "Incremental new documents";
+  if (value === "embedding_backfill") return "Embedding backfill";
+  return "Full reindex";
+}
+
+function retrievalAlgorithmLabel(value: string) {
+  if (value === "vector") return "Vector only";
+  if (value === "keyword") return "Keyword only";
+  return "Hybrid RRF";
 }
 
 function OrganizationSettings() {

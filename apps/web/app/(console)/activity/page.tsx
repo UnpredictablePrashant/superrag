@@ -167,7 +167,14 @@ function PipelineRow({ run }: { run: PipelineRun }) {
           <p className="mt-2 font-medium text-zinc-950">
             {run.processed_count}/{run.total_count} documents processed
           </p>
-          <p className="text-sm text-zinc-500">ETA {formatDuration(run.estimated_completion_seconds)}</p>
+          <p className="text-sm text-zinc-500">
+            {run.current_item ? `${run.current_item} / ` : ""}ETA {formatDuration(run.estimated_completion_seconds)}
+          </p>
+          {run.errors.length || run.warnings.length ? (
+            <p className="mt-1 text-xs text-zinc-500">
+              {run.errors.length} error(s), {run.warnings.length} warning(s)
+            </p>
+          ) : null}
         </div>
         <div className="w-full max-w-sm">
           <div className="mb-1 flex justify-between text-xs text-zinc-500">

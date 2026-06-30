@@ -2,12 +2,12 @@
 
 import { ErrorBox } from "@/components/error-box";
 import { StatusBadge } from "@/components/status-badge";
-import { API_URL, api, getPipelineRun } from "@/lib/api";
+import { API_URL, api, getPipelineRun, reviewDocument } from "@/lib/api";
 import { formatDuration, shortDate } from "@/lib/format";
 import type { PipelineRun } from "@rag-console/shared-types";
 import { Button, Panel } from "@rag-console/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, RefreshCw, RotateCw } from "lucide-react";
+import { Ban, Check, RefreshCw, RotateCw, X } from "lucide-react";
 import { useParams } from "next/navigation";
 import * as React from "react";
 
@@ -16,6 +16,9 @@ export default function PipelineDetailPage() {
   const queryClient = useQueryClient();
   const [liveRun, setLiveRun] = React.useState<PipelineRun | null>(null);
   const [error, setError] = React.useState("");
+  const [notice, setNotice] = React.useState("");
+  const [streamKey, setStreamKey] = React.useState(0);
+  const [reviewingDocumentId, setReviewingDocumentId] = React.useState("");
   const runQuery = useQuery({ queryKey: ["pipeline-run", params.id], queryFn: () => getPipelineRun(params.id) });
   const run = liveRun ?? runQuery.data;
 
@@ -26,7 +29,7 @@ export default function PipelineDetailPage() {
     });
     source.onerror = () => source.close();
     return () => source.close();
-  }, [params.id]);
+  }, [params.id, streamKey]);
 
   async function cancel() {
     setError("");
@@ -40,11 +43,39 @@ export default function PipelineDetailPage() {
 
   async function retry() {
     setError("");
+    setNotice("");
     try {
-      await api(`/pipeline-runs/${params.id}/retry`, { method: "POST" });
+      const retried = await api<PipelineRun>(`/pipeline-runs/${params.id}/retry`, { method: "POST" });
+      setLiveRun(retried);
+      setStreamKey((value) => value + 1);
       queryClient.invalidateQueries({ queryKey: ["pipeline-run", params.id] });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not retry pipeline.");
+    }
+  }
+
+  async function reviewAndResume(documentId: string, action: "continue_unchanged" | "exclude_document") {
+    setError("");
+    setNotice("");
+    setReviewingDocumentId(documentId);
+    try {
+      await reviewDocument(documentId, action);
+      if (action === "continue_unchanged") {
+        const retried = await api<PipelineRun>(`/pipeline-runs/${params.id}/retry`, { method: "POST" });
+        setLiveRun(retried);
+        setStreamKey((value) => value + 1);
+        setNotice("Review approved. Pipeline resumed.");
+      } else {
+        setLiveRun(null);
+        setNotice("Document excluded from ingestion.");
+      }
+      queryClient.invalidateQueries({ queryKey: ["pipeline-run", params.id] });
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update review item.");
+    } finally {
+      setReviewingDocumentId("");
     }
   }
 
@@ -77,6 +108,7 @@ export default function PipelineDetailPage() {
         </div>
       </div>
       <ErrorBox message={error} />
+      {notice ? <div className="rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div> : null}
       <Panel className="p-5">
         <div className="grid gap-4 md:grid-cols-4">
           <Stat label="Stage" value={run.current_stage.replaceAll("_", " ")} />
@@ -104,6 +136,26 @@ export default function PipelineDetailPage() {
               <div>
                 <p className="font-medium text-zinc-950">{String(doc.name)}</p>
                 {doc.error ? <p className="text-sm text-rose-700">{String(doc.error)}</p> : null}
+                {String(doc.status) === "AWAITING_REVIEW" ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      variant="secondary"
+                      onClick={() => reviewAndResume(String(doc.document_id), "continue_unchanged")}
+                      disabled={reviewingDocumentId === String(doc.document_id)}
+                    >
+                      <Check className="h-4 w-4" aria-hidden />
+                      Continue
+                    </Button>
+                    <Button
+                      variant="danger"
+                      onClick={() => reviewAndResume(String(doc.document_id), "exclude_document")}
+                      disabled={reviewingDocumentId === String(doc.document_id)}
+                    >
+                      <X className="h-4 w-4" aria-hidden />
+                      Exclude
+                    </Button>
+                  </div>
+                ) : null}
               </div>
               <div className="flex min-w-64 items-center gap-3">
                 <div className="h-2 flex-1 overflow-hidden rounded-full bg-zinc-100">

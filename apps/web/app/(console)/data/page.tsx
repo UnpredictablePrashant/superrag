@@ -191,7 +191,17 @@ export default function DataHubPage() {
     setError("");
     try {
       await reviewDocument(doc.id, action);
-      setNotice(action === "exclude_document" ? "Document excluded from ingestion." : "Document returned to ingestion.");
+      if (action === "continue_unchanged") {
+        const run = await createPipelineRun({
+          knowledge_base_id: doc.knowledge_base_id,
+          document_ids: [doc.id],
+          retrieval_index_config: { source: "data_hub_review_approval", reindex_strategy: "full_replace_chunks_and_vectors" },
+        });
+        setNotice(`Review approved. RAG pipeline queued with ${run.total_count} document(s).`);
+        queryClient.invalidateQueries({ queryKey: ["pipeline-runs"] });
+      } else {
+        setNotice("Document excluded from ingestion.");
+      }
       queryClient.invalidateQueries({ queryKey: ["documents"] });
       queryClient.invalidateQueries({ queryKey: ["workspace-summary"] });
     } catch (err) {

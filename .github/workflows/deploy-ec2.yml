@@ -10,6 +10,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
 env:
   EC2_HOST: ${{ secrets.EC2_HOST || vars.EC2_HOST || '18.188.234.72' }}
   EC2_USER: ${{ secrets.EC2_USER || vars.EC2_USER || 'ubuntu' }}
@@ -209,13 +213,41 @@ jobs:
             sudo systemctl enable --now nginx
             sudo systemctl reload nginx || sudo systemctl restart nginx
 
-            if [ ! -f /etc/letsencrypt/live/rag.atharvaai.com/fullchain.pem ]; then
-              if [ -n "${TLS_EMAIL:-}" ]; then
-                sudo certbot certonly --webroot --webroot-path /var/www/letsencrypt --domain rag.atharvaai.com --non-interactive --agree-tos --email "${TLS_EMAIL}" --keep-until-expiring
-              else
-                sudo certbot certonly --webroot --webroot-path /var/www/letsencrypt --domain rag.atharvaai.com --non-interactive --agree-tos --register-unsafely-without-email --keep-until-expiring
-              fi
-            fi
+            request_certificate() {
+              attempt=1
+              max_attempts=10
+              while [ "${attempt}" -le "${max_attempts}" ]; do
+                if [ -f /etc/letsencrypt/live/rag.atharvaai.com/fullchain.pem ]; then
+                  return 0
+                fi
+
+                echo "Requesting Let's Encrypt certificate for rag.atharvaai.com (attempt ${attempt}/${max_attempts})"
+                if [ -n "${TLS_EMAIL:-}" ]; then
+                  if sudo certbot certonly --webroot --webroot-path /var/www/letsencrypt --domain rag.atharvaai.com --non-interactive --agree-tos --email "${TLS_EMAIL}" --keep-until-expiring; then
+                    return 0
+                  fi
+                else
+                  if sudo certbot certonly --webroot --webroot-path /var/www/letsencrypt --domain rag.atharvaai.com --non-interactive --agree-tos --register-unsafely-without-email --keep-until-expiring; then
+                    return 0
+                  fi
+                fi
+
+                if [ -f /etc/letsencrypt/live/rag.atharvaai.com/fullchain.pem ]; then
+                  return 0
+                fi
+
+                if [ "${attempt}" -eq "${max_attempts}" ]; then
+                  echo "Certbot did not complete after ${max_attempts} attempts."
+                  return 1
+                fi
+
+                echo "Certbot is busy or failed transiently; waiting 30 seconds before retrying."
+                sleep 30
+                attempt=$((attempt + 1))
+              done
+            }
+
+            request_certificate
 
             cat > /tmp/rag-console-https.conf <<'NGINX_HTTPS'
             server {

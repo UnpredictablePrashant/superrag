@@ -364,6 +364,14 @@ jobs:
           script: |
             set -eu
 
+            API_IMAGE="${API_IMAGE:-${{ needs.build-and-push.outputs.api_image }}}"
+            WEB_IMAGE="${WEB_IMAGE:-${{ needs.build-and-push.outputs.web_image }}}"
+            if [ -z "${API_IMAGE}" ] || [ -z "${WEB_IMAGE}" ]; then
+              echo "Missing API_IMAGE or WEB_IMAGE from the build-and-push job outputs."
+              exit 1
+            fi
+            export API_IMAGE WEB_IMAGE
+
             app_dir="${{ env.EC2_APP_DIR }}"
             case "${app_dir}" in
               "~")
@@ -494,9 +502,6 @@ jobs:
               echo "Missing required values in ${app_dir}/.env:${missing_env}"
               exit 1
             fi
-
-            export API_IMAGE
-            export WEB_IMAGE
 
             cat > docker-compose.ec2.yml <<'COMPOSE'
             services:

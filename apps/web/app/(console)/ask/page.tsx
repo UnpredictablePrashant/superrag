@@ -62,7 +62,7 @@ export default function AskPage() {
   React.useEffect(() => {
     if (activeSession.data?.messages) setMessages(activeSession.data.messages);
     const profileId = activeSession.data?.session.model_profile_id;
-    if (profileId && profiles.data?.chat_profiles.some((profile) => profile.id === profileId)) {
+    if (profileId && profiles.data?.chat_profiles.some((profile) => profile.id === profileId && profile.is_enabled)) {
       setSelectedModelProfileId(profileId);
     }
   }, [activeSession.data, profiles.data]);
@@ -71,8 +71,9 @@ export default function AskPage() {
     if (!selectedKbIds.length && defaultKbId) setSelectedKbIds([defaultKbId]);
   }, [kbs.data, selectedKbIds.length, summary.data?.default_knowledge_base?.id]);
   React.useEffect(() => {
-    if (!selectedModelProfileId && profiles.data?.chat_profiles[0]) {
-      setSelectedModelProfileId(profiles.data.chat_profiles[0].id);
+    const enabledProfiles = (profiles.data?.chat_profiles ?? []).filter((profile) => profile.is_enabled);
+    if (!selectedModelProfileId && enabledProfiles[0]) {
+      setSelectedModelProfileId(enabledProfiles[0].id);
     }
   }, [profiles.data, selectedModelProfileId]);
 
@@ -222,8 +223,9 @@ export default function AskPage() {
   }
 
   const selectedKbName = kbs.data?.filter((kb) => selectedKbIds.includes(kb.id)).map((kb) => kb.name).join(", ");
-  const selectedModel = profiles.data?.chat_profiles.find((profile) => profile.id === selectedModelProfileId);
-  const hasChatProfiles = Boolean(profiles.data?.chat_profiles.length);
+  const enabledChatProfiles = (profiles.data?.chat_profiles ?? []).filter((profile) => profile.is_enabled);
+  const selectedModel = enabledChatProfiles.find((profile) => profile.id === selectedModelProfileId);
+  const hasChatProfiles = Boolean(enabledChatProfiles.length);
   const availableModes = summary.data?.available_answer_modes ?? ["company_data"];
   const canUseWebSearch = availableModes.includes("live_web") || availableModes.includes("blended");
   const canUseMcpTools = availableModes.includes("mcp_tools") || availableModes.includes("blended");
@@ -414,7 +416,7 @@ export default function AskPage() {
             <label className="text-sm font-medium text-zinc-800">Model</label>
             <Select value={selectedModelProfileId} onChange={(event) => setSelectedModelProfileId(event.target.value)}>
               {!hasChatProfiles ? <option value="">Local fallback</option> : null}
-              {(profiles.data?.chat_profiles ?? []).map((profile) => (
+              {enabledChatProfiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.provider} / {profile.model_name}
                 </option>

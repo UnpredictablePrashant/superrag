@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, timedelta
 from uuid import UUID
 
@@ -28,7 +29,7 @@ from app.models.entities import (
 from app.models.entities import (
     Session as UserSession,
 )
-from app.schemas.api import AuthResponse, RequestOTPIn, UserOut, VerifyOTPIn
+from app.schemas.api import AuthResponse, RequestOTPIn, UserOut, UserProfilePatchIn, VerifyOTPIn
 from app.services.email import send_otp_email
 from app.services.invitations import accept_organization_invitation, find_active_membership
 from app.services.profiles import ensure_default_profiles
@@ -171,6 +172,26 @@ def me(ctx: AuthContext = Depends(get_auth_context)) -> AuthResponse:
     )
 
 
+@router.patch("/me", response_model=UserOut)
+def update_me(
+    payload: UserProfilePatchIn,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> User:
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        if isinstance(value, str):
+            value = value.strip() or None
+        if field == "telegram_username" and value:
+            value = str(value).lstrip("@").lower()
+        if field == "phone_number" and value:
+            value = _normalize_phone(str(value))
+        setattr(ctx.user, field, value)
+    db.commit()
+    db.refresh(ctx.user)
+    return ctx.user
+
+
 def _create_organization(db: Session, name: str, owner_id: UUID) -> Organization:
     base_slug = _slugify(name)
     slug = base_slug
@@ -185,7 +206,12 @@ def _create_organization(db: Session, name: str, owner_id: UUID) -> Organization
 
 
 def _slugify(value: str) -> str:
-    import re
-
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "organization"
+
+
+def _normalize_phone(phone_number: str) -> str | None:
+    normalized = re.sub(r"[^\d+]", "", phone_number.strip())
+    if normalized.startswith("00"):
+        normalized = "+" + normalized[2:]
+    return normalized or None

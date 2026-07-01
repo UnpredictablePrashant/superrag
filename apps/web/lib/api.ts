@@ -68,6 +68,7 @@ export interface ChatProfile {
   context_window?: number | null;
   max_output_tokens?: number | null;
   is_default: boolean;
+  is_enabled: boolean;
   config: Record<string, unknown>;
 }
 
@@ -81,6 +82,16 @@ export interface ChatProfileCreateInput {
   max_output_tokens?: number | null;
   is_default?: boolean;
   config?: Record<string, unknown>;
+}
+
+export interface UserProfilePatchInput {
+  full_name?: string | null;
+  job_title?: string | null;
+  department?: string | null;
+  phone_number?: string | null;
+  telegram_username?: string | null;
+  location?: string | null;
+  bio?: string | null;
 }
 
 export interface EmbeddingProfile {
@@ -308,6 +319,13 @@ export function getMe() {
   return api<AuthResponse>("/auth/me");
 }
 
+export function updateMe(payload: UserProfilePatchInput) {
+  return api<User>("/auth/me", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listKnowledgeBases() {
   return api<KnowledgeBase[]>("/knowledge-bases");
 }
@@ -457,6 +475,13 @@ export function listProfiles() {
 export function createChatProfile(payload: ChatProfileCreateInput) {
   return api<{ id: string; message: string }>("/profiles/chat", {
     method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateChatProfile(id: string, payload: Partial<Pick<ChatProfile, "name" | "is_default" | "is_enabled">>) {
+  return api<{ id: string; message: string }>(`/profiles/chat/${id}`, {
+    method: "PATCH",
     body: JSON.stringify(payload),
   });
 }

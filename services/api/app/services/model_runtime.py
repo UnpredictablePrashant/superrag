@@ -31,6 +31,7 @@ def resolve_chat_model(
                 ModelProfile.organization_id == organization_id,
                 ModelProfile.kind == ProfileKind.CHAT,
                 ModelProfile.deleted_at.is_(None),
+                ModelProfile.is_enabled.is_(True),
                 ~(
                     (ModelProfile.provider_connection_id.is_(None))
                     & (ModelProfile.model_name == "deterministic-local-384")
@@ -46,6 +47,7 @@ def resolve_chat_model(
                 ModelProfile.organization_id == organization_id,
                 ModelProfile.kind == ProfileKind.CHAT,
                 ModelProfile.deleted_at.is_(None),
+                ModelProfile.is_enabled.is_(True),
                 ~(
                     (ModelProfile.provider_connection_id.is_(None))
                     & (ModelProfile.model_name == "deterministic-local-384")
@@ -107,6 +109,7 @@ def _get_chat_profile(db: Session, organization_id: UUID, profile_id: UUID) -> M
         or profile.organization_id != organization_id
         or profile.kind != ProfileKind.CHAT
         or profile.deleted_at is not None
+        or not profile.is_enabled
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat model profile not found.")
     return profile

@@ -22,6 +22,12 @@ export interface User {
   id: string;
   email: string;
   full_name?: string | null;
+  job_title?: string | null;
+  department?: string | null;
+  phone_number?: string | null;
+  telegram_username?: string | null;
+  location?: string | null;
+  bio?: string | null;
   is_email_verified: boolean;
 }
 

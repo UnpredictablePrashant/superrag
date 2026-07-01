@@ -8,10 +8,12 @@ import {
   BookOpen,
   ClipboardList,
   DatabaseZap,
+  Files,
   LogOut,
   MessageSquare,
   Settings,
   Sparkles,
+  UserCircle,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -21,11 +23,13 @@ import * as React from "react";
 
 const nav = [
   { href: "/ask", label: "Ask", icon: MessageSquare },
-  { href: "/data", label: "Data Hub", icon: DatabaseZap },
-  { href: "/activity", label: "Activity", icon: ClipboardList },
-  { href: "/team", label: "Team", icon: Users },
+  { href: "/directory", label: "Directory", icon: Files },
+  { href: "/profile", label: "Profile", icon: UserCircle },
+  { href: "/data", label: "Data Hub", icon: DatabaseZap, adminOnly: true },
+  { href: "/activity", label: "Activity", icon: ClipboardList, adminOnly: true },
+  { href: "/team", label: "Team", icon: Users, adminOnly: true },
   { href: "/help", label: "Docs", icon: BookOpen },
-  { href: "/settings", label: "Admin Settings", icon: Settings },
+  { href: "/settings", label: "Admin Settings", icon: Settings, adminOnly: true },
 ];
 
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
@@ -33,6 +37,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: getMe, retry: false });
+  const canUseAdminNav = me.data?.role === "Owner" || me.data?.role === "Admin";
 
   React.useEffect(() => {
     if (me.isError) router.replace("/login");
@@ -70,7 +75,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <nav className="flex-1 space-y-1 px-3 py-4">
-            {nav.map((item) => {
+            {nav.filter((item) => !item.adminOnly || canUseAdminNav).map((item) => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
               return (
                 <Link

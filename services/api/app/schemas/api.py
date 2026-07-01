@@ -17,7 +17,23 @@ class UserOut(APIModel):
     id: UUID
     email: EmailStr
     full_name: str | None = None
+    job_title: str | None = None
+    department: str | None = None
+    phone_number: str | None = None
+    telegram_username: str | None = None
+    location: str | None = None
+    bio: str | None = None
     is_email_verified: bool
+
+
+class UserProfilePatchIn(BaseModel):
+    full_name: str | None = Field(default=None, max_length=200)
+    job_title: str | None = Field(default=None, max_length=160)
+    department: str | None = Field(default=None, max_length=160)
+    phone_number: str | None = Field(default=None, max_length=40)
+    telegram_username: str | None = Field(default=None, max_length=160)
+    location: str | None = Field(default=None, max_length=160)
+    bio: str | None = Field(default=None, max_length=2000)
 
 
 class OrganizationOut(APIModel):
@@ -402,6 +418,13 @@ class ModelProfileCreateIn(BaseModel):
     max_output_tokens: int | None = None
     is_default: bool = False
     config: dict[str, Any] = {}
+
+
+class ModelProfilePatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    is_default: bool | None = None
+    is_enabled: bool | None = None
+    config: dict[str, Any] | None = None
 
 
 class EmbeddingProfileCreateIn(BaseModel):

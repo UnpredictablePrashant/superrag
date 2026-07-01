@@ -10,6 +10,7 @@ import {
   ConnectorRun,
   createPipelineRun,
   deleteDocument,
+  getMe,
   getCompanyProfile,
   getDocumentQualityReport,
   getTelegramIntegration,
@@ -60,6 +61,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import * as React from "react";
 
 const DEFAULT_MCP_CONFIG = `{
@@ -76,6 +78,7 @@ const DEFAULT_MCP_CONFIG = `{
 }`;
 
 export default function DataHubPage() {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [selectedKbId, setSelectedKbId] = React.useState("");
   const [activeConnectionId, setActiveConnectionId] = React.useState("");
@@ -85,6 +88,7 @@ export default function DataHubPage() {
   const [notice, setNotice] = React.useState("");
 
   const summary = useQuery({ queryKey: ["workspace-summary"], queryFn: getWorkspaceSummary, refetchInterval: 10000 });
+  const me = useQuery({ queryKey: ["me"], queryFn: getMe });
   const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
   const docs = useQuery({ queryKey: ["documents", selectedKbId], queryFn: () => listDocuments(selectedKbId || undefined) });
   const connectors = useQuery({ queryKey: ["connectors"], queryFn: listConnectors, refetchInterval: 10000 });
@@ -116,6 +120,13 @@ export default function DataHubPage() {
     const defaultKbId = summary.data?.default_knowledge_base?.id ?? kbs.data?.[0]?.id;
     if (!selectedKbId && defaultKbId) setSelectedKbId(defaultKbId);
   }, [kbs.data, selectedKbId, summary.data?.default_knowledge_base?.id]);
+  React.useEffect(() => {
+    if (me.data && me.data.role !== "Owner" && me.data.role !== "Admin") router.replace("/directory");
+  }, [me.data, router]);
+
+  if (me.isLoading || (me.data && me.data.role !== "Owner" && me.data.role !== "Admin")) {
+    return <div className="text-sm text-zinc-500">Loading data hub</div>;
+  }
 
   async function testConnector(connection: ConnectorConnection) {
     setError("");

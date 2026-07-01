@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import AuthContext, capability, require_organization
+from app.core.permissions import Role
 from app.db.session import get_db
 from app.models.entities import (
     ChunkingProfile,
@@ -15,7 +16,7 @@ from app.models.entities import (
     ProviderConnection,
     ProviderKind,
 )
-from app.schemas.api import EmbeddingProfileCreateIn, ModelProfileCreateIn
+from app.schemas.api import EmbeddingProfileCreateIn, ModelProfileCreateIn, ModelProfilePatchIn
 from app.services.profiles import ensure_default_profiles
 from app.services.providers import embedding_dimension_for_model, infer_capability
 
@@ -26,21 +27,33 @@ router = APIRouter(prefix="/profiles", tags=["profiles"])
 def list_profiles(ctx: AuthContext = Depends(require_organization), db: Session = Depends(get_db)) -> dict:
     ensure_default_profiles(db, ctx.organization_id)
     db.commit()
+    can_manage_profiles = ctx.role in {Role.OWNER.value, Role.ADMIN.value}
+    chat_conditions = [
+        ModelProfile.organization_id == ctx.organization_id,
+        ModelProfile.kind == ProfileKind.CHAT,
+        ModelProfile.deleted_at.is_(None),
+        ~(
+            (ModelProfile.provider_connection_id.is_(None))
+            & (ModelProfile.model_name == "deterministic-local-384")
+        ),
+    ]
+    if not can_manage_profiles:
+        chat_conditions.append(ModelProfile.is_enabled.is_(True))
     chat_profiles = list(
         db.scalars(
             select(ModelProfile)
-            .where(
-                ModelProfile.organization_id == ctx.organization_id,
-                ModelProfile.kind == ProfileKind.CHAT,
-                ModelProfile.deleted_at.is_(None),
-                ~(
-                    (ModelProfile.provider_connection_id.is_(None))
-                    & (ModelProfile.model_name == "deterministic-local-384")
-                ),
-            )
+            .where(*chat_conditions)
             .order_by(ModelProfile.is_default.desc(), ModelProfile.created_at)
         )
     )
+    if not can_manage_profiles:
+        connections = _connections_by_id(db, ctx.organization_id, chat_profiles, [])
+        return {
+            "chat_profiles": [_chat_profile_out(profile, connections) for profile in chat_profiles],
+            "cleanup_profiles": [],
+            "chunking_profiles": [],
+            "embedding_profiles": [],
+        }
     embedding_profiles = list(
         db.scalars(
             select(EmbeddingProfile)
@@ -53,25 +66,7 @@ def list_profiles(ctx: AuthContext = Depends(require_organization), db: Session 
     )
     connections = _connections_by_id(db, ctx.organization_id, chat_profiles, embedding_profiles)
     return {
-        "chat_profiles": [
-            {
-                "id": str(profile.id),
-                "name": profile.name,
-                "model_name": profile.model_name,
-                "provider_connection_id": str(profile.provider_connection_id)
-                if profile.provider_connection_id
-                else None,
-                "provider": _provider_for_profile(profile, connections),
-                "connection_name": _connection_name(profile.provider_connection_id, connections),
-                "supports_streaming": profile.supports_streaming,
-                "supports_structured_output": profile.supports_structured_output,
-                "context_window": profile.context_window,
-                "max_output_tokens": profile.max_output_tokens,
-                "is_default": profile.is_default,
-                "config": profile.config,
-            }
-            for profile in chat_profiles
-        ],
+        "chat_profiles": [_chat_profile_out(profile, connections) for profile in chat_profiles],
         "cleanup_profiles": [
             {
                 "id": str(profile.id),
@@ -159,11 +154,45 @@ def create_chat_profile(
             "provider": provider,
         },
         is_default=payload.is_default,
+        is_enabled=True,
     )
     db.add(profile)
     db.commit()
     db.refresh(profile)
     return {"id": str(profile.id), "message": "Chat model profile created."}
+
+
+@router.patch("/chat/{profile_id}")
+def patch_chat_profile(
+    profile_id: str,
+    payload: ModelProfilePatchIn,
+    ctx: AuthContext = Depends(capability("add_provider_keys")),
+    db: Session = Depends(get_db),
+) -> dict:
+    profile = db.get(ModelProfile, profile_id)
+    if (
+        not profile
+        or profile.organization_id != ctx.organization_id
+        or profile.kind != ProfileKind.CHAT
+        or profile.deleted_at is not None
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat model profile not found.")
+    if payload.name is not None:
+        profile.name = payload.name
+    if payload.config is not None:
+        profile.config = {**profile.config, **payload.config}
+    if payload.is_enabled is not None:
+        profile.is_enabled = payload.is_enabled
+        if not payload.is_enabled:
+            profile.is_default = False
+    if payload.is_default is not None:
+        if payload.is_default:
+            _clear_default_chat_profiles(db, ctx.organization_id)
+            profile.is_enabled = True
+        profile.is_default = payload.is_default
+    db.commit()
+    db.refresh(profile)
+    return {"id": str(profile.id), "message": "Chat model profile updated."}
 
 
 @router.post("/embeddings")
@@ -241,6 +270,26 @@ def _connections_by_id(
                 ProviderConnection.deleted_at.is_(None),
             )
         )
+    }
+
+
+def _chat_profile_out(profile: ModelProfile, connections: dict) -> dict:
+    return {
+        "id": str(profile.id),
+        "name": profile.name,
+        "model_name": profile.model_name,
+        "provider_connection_id": str(profile.provider_connection_id)
+        if profile.provider_connection_id
+        else None,
+        "provider": _provider_for_profile(profile, connections),
+        "connection_name": _connection_name(profile.provider_connection_id, connections),
+        "supports_streaming": profile.supports_streaming,
+        "supports_structured_output": profile.supports_structured_output,
+        "context_window": profile.context_window,
+        "max_output_tokens": profile.max_output_tokens,
+        "is_default": profile.is_default,
+        "is_enabled": profile.is_enabled,
+        "config": profile.config,
     }
 
 

@@ -113,6 +113,12 @@ class User(UUIDMixin, TimestampMixin, Base):
 
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     full_name: Mapped[str | None] = mapped_column(String(200))
+    job_title: Mapped[str | None] = mapped_column(String(160))
+    department: Mapped[str | None] = mapped_column(String(160))
+    phone_number: Mapped[str | None] = mapped_column(String(40))
+    telegram_username: Mapped[str | None] = mapped_column(String(160))
+    location: Mapped[str | None] = mapped_column(String(160))
+    bio: Mapped[str | None] = mapped_column(Text)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -360,6 +366,7 @@ class ModelProfile(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
     max_output_tokens: Mapped[int | None] = mapped_column(Integer)
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
 class CleanupProfile(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):

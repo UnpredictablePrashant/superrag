@@ -6,6 +6,7 @@ import {
   api,
   createChatProfile,
   createEmbeddingProfile,
+  getMe,
   getTelegramIntegration,
   listConnectors,
   listKnowledgeBases,
@@ -13,6 +14,7 @@ import {
   listProfiles,
   listProviderModels,
   listTelegramAllowedUsers,
+  updateChatProfile,
   updateKnowledgeBase,
   ConnectorConnection,
   ConnectorRun,
@@ -25,6 +27,7 @@ import { shortDate } from "@/lib/format";
 import { Badge, Button, Input, Label, Panel, Select, Textarea } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Bot, Globe, History, KeyRound, Play, Plug, RotateCw, Save, Send, ShieldCheck, SlidersHorizontal, Trash2, UserPlus } from "lucide-react";
+import { useRouter } from "next/navigation";
 import * as React from "react";
 
 const tabs = [
@@ -53,7 +56,16 @@ const DEFAULT_MCP_CONFIG = `{
 }`;
 
 export default function SettingsPage() {
+  const router = useRouter();
   const [tab, setTab] = React.useState("RAG Settings");
+  const me = useQuery({ queryKey: ["me"], queryFn: getMe });
+  const canManageSettings = me.data?.role === "Owner" || me.data?.role === "Admin";
+  React.useEffect(() => {
+    if (me.data && !canManageSettings) router.replace("/ask");
+  }, [canManageSettings, me.data, router]);
+  if (me.isLoading || !canManageSettings) {
+    return <div className="text-sm text-zinc-500">Loading settings</div>;
+  }
   return (
     <div className="space-y-6">
       <div>
@@ -1092,6 +1104,15 @@ function ModelProfileSettings({ profiles }: { profiles?: ProfilesResponse }) {
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Could not create model profile."),
   });
+  async function updateProfile(id: string, patch: { is_enabled?: boolean; is_default?: boolean }) {
+    setError("");
+    try {
+      await updateChatProfile(id, patch);
+      queryClient.invalidateQueries({ queryKey: ["profiles"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update model profile.");
+    }
+  }
   return (
     <Panel className="p-5">
       <h3 className="font-semibold text-zinc-950">Model Profiles</h3>
@@ -1118,13 +1139,14 @@ function ModelProfileSettings({ profiles }: { profiles?: ProfilesResponse }) {
           </Button>
         </div>
       </div>
-      <ProfileCards profiles={profiles?.chat_profiles ?? []} />
+      <ProfileCards profiles={profiles?.chat_profiles ?? []} onUpdate={updateProfile} />
     </Panel>
   );
 }
 
 function ProfileCards({
   profiles,
+  onUpdate,
 }: {
   profiles: Array<{
     id: string;
@@ -1134,7 +1156,9 @@ function ProfileCards({
     strategy?: unknown;
     is_active?: unknown;
     is_default?: unknown;
+    is_enabled?: unknown;
   }>;
+  onUpdate?: (id: string, patch: { is_enabled?: boolean; is_default?: boolean }) => void;
 }) {
   return (
     <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -1146,6 +1170,16 @@ function ProfileCards({
           </p>
           {"is_active" in profile && profile.is_active ? <Badge tone="green">Active</Badge> : null}
           {"is_default" in profile && profile.is_default ? <Badge tone="blue">Default</Badge> : null}
+          {"is_enabled" in profile ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={() => onUpdate?.(String(profile.id), { is_enabled: !profile.is_enabled })}>
+                {profile.is_enabled ? "Disable" : "Enable"}
+              </Button>
+              <Button variant="ghost" disabled={Boolean(profile.is_default)} onClick={() => onUpdate?.(String(profile.id), { is_default: true })}>
+                Set default
+              </Button>
+            </div>
+          ) : null}
         </div>
       ))}
     </div>

@@ -158,6 +158,11 @@ class OrganizationInvitation(UUIDMixin, TimestampMixin, Base):
     role: Mapped[MemberRole] = mapped_column(Enum(MemberRole), default=MemberRole.MEMBER)
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     invited_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_username: Mapped[str | None] = mapped_column(String(160))
+    telegram_phone_number: Mapped[str | None] = mapped_column(String(40))
+    telegram_can_ingest: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    telegram_can_query: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

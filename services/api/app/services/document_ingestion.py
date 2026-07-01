@@ -142,9 +142,9 @@ def queue_pipeline_for_documents(
             )
     )
     db.commit()
-    from app.workers.tasks import process_pipeline_run_task
+    from app.services.queueing import enqueue_pipeline_run
 
-    process_pipeline_run_task.delay(str(run.id))
+    enqueue_pipeline_run(run.id, reason="document_ingestion")
     db.refresh(run)
     return run
 

@@ -47,6 +47,8 @@ In `Settings -> Telegram`, add each approved user by at least one identifier:
 
 Linking the entry to a RAG user ID is required for `/ask`, because chat retrieval needs the user's organization membership and document permissions. Ingestion can work without a linked RAG user when `Can ingest` is enabled.
 
+Admins can also enter Telegram identifiers while inviting a teammate from `Team Management`. When the invite is accepted, the app creates or links the Telegram allow-list entry to that RAG account automatically.
+
 ## Telegram Commands
 
 ```text

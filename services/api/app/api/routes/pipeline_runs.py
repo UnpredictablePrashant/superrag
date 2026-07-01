@@ -23,7 +23,7 @@ from app.models.entities import (
 )
 from app.schemas.api import PipelineRunCreateIn, PipelineRunOut
 from app.services.document_ingestion import apply_retrieval_defaults
-from app.workers.tasks import process_pipeline_run_task
+from app.services.queueing import enqueue_pipeline_run
 
 router = APIRouter(prefix="/pipeline-runs", tags=["pipeline-runs"])
 
@@ -98,7 +98,7 @@ def create_pipeline_run(
             )
         )
     db.commit()
-    process_pipeline_run_task.delay(str(run.id))
+    enqueue_pipeline_run(run.id, reason="created")
     db.refresh(run)
     return _run_out(db, run)
 
@@ -178,7 +178,7 @@ def retry_pipeline_run(
         if document and document.organization_id == ctx.organization_id:
             document.processing_status = DocumentStatus.QUEUED
     db.commit()
-    process_pipeline_run_task.delay(str(run.id))
+    enqueue_pipeline_run(run.id, reason="retry")
     return _run_out(db, run)
 
 

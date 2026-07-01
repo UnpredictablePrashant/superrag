@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import timedelta
 
@@ -136,6 +137,8 @@ def create_invitation(
     ctx: AuthContext = Depends(capability("invite_users")),
     db: Session = Depends(get_db),
 ) -> dict:
+    if not can_manage_role(ctx.role or "", payload.role.value):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="You cannot invite users with this role.")
     token = secrets.token_urlsafe(32)
     invitation = OrganizationInvitation(
         organization_id=ctx.organization_id,
@@ -143,6 +146,11 @@ def create_invitation(
         role=payload.role,
         token_hash=hash_secret(token),
         invited_by_user_id=ctx.user.id,
+        telegram_user_id=payload.telegram_user_id,
+        telegram_username=_normalize_telegram_username(payload.telegram_username),
+        telegram_phone_number=_normalize_phone(payload.telegram_phone_number),
+        telegram_can_ingest=payload.telegram_can_ingest,
+        telegram_can_query=payload.telegram_can_query,
         expires_at=utcnow() + timedelta(days=14),
     )
     db.add(invitation)
@@ -272,8 +280,6 @@ def patch_member(
 
 
 def _create_organization(db: Session, name: str) -> Organization:
-    import re
-
     base_slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "organization"
     slug = base_slug
     counter = 2
@@ -284,3 +290,18 @@ def _create_organization(db: Session, name: str) -> Organization:
     db.add(organization)
     db.flush()
     return organization
+
+
+def _normalize_telegram_username(username: str | None) -> str | None:
+    if not username:
+        return None
+    return username.strip().lstrip("@").lower() or None
+
+
+def _normalize_phone(phone_number: str | None) -> str | None:
+    if not phone_number:
+        return None
+    normalized = re.sub(r"[^\d+]", "", str(phone_number).strip())
+    if normalized.startswith("00"):
+        normalized = "+" + normalized[2:]
+    return normalized or None

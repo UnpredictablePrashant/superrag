@@ -68,6 +68,11 @@ class OrganizationPatchIn(BaseModel):
 class InvitationCreateIn(BaseModel):
     email: EmailStr
     role: MemberRole = MemberRole.MEMBER
+    telegram_user_id: int | None = None
+    telegram_username: str | None = None
+    telegram_phone_number: str | None = None
+    telegram_can_ingest: bool = True
+    telegram_can_query: bool = True
 
 
 class MemberPatchIn(BaseModel):

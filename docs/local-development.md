@@ -18,5 +18,6 @@ Local services:
 
 - PostgreSQL/pgvector: `localhost:5432`
 - Redis: `localhost:6379`
+- Kafka: `localhost:9092`
 - MinIO: `localhost:9000`, console `localhost:9001`
 - Mailpit: SMTP `localhost:1025`, UI `localhost:8025`

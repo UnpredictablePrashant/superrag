@@ -13,10 +13,17 @@ Confirm the web app is calling the API upload route (`/api/uploads`) rather than
 Check the worker logs:
 
 ```bash
-docker compose logs -f worker
+docker compose logs -f pipeline-worker
 ```
 
-Also verify Redis is healthy.
+Also verify Kafka is healthy and the pipeline topic is available:
+
+```bash
+docker compose logs kafka
+docker compose exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --list
+```
+
+If Kafka is disabled, pipeline dispatch falls back to Celery; check `docker compose logs -f worker` and Redis health.
 
 ## API cannot connect to storage
 

@@ -9,6 +9,7 @@ import {
   getTelegramIntegration,
   listConnectors,
   listKnowledgeBases,
+  listMembers,
   listProfiles,
   listProviderModels,
   listTelegramAllowedUsers,
@@ -1159,6 +1160,7 @@ function TelegramSettings() {
   const queryClient = useQueryClient();
   const integration = useQuery({ queryKey: ["telegram-integration"], queryFn: getTelegramIntegration });
   const allowedUsers = useQuery({ queryKey: ["telegram-allowed-users"], queryFn: listTelegramAllowedUsers });
+  const members = useQuery({ queryKey: ["members"], queryFn: listMembers });
   const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: listProfiles });
   const [botToken, setBotToken] = React.useState("");
@@ -1379,8 +1381,15 @@ function TelegramSettings() {
             <Input value={userDraft.telegram_user_id} onChange={(event) => setUserDraft({ ...userDraft, telegram_user_id: event.target.value })} />
           </div>
           <div className="space-y-2">
-            <Label>RAG user ID</Label>
-            <Input value={userDraft.user_id} onChange={(event) => setUserDraft({ ...userDraft, user_id: event.target.value })} />
+            <Label>RAG account</Label>
+            <Select value={userDraft.user_id} onChange={(event) => setUserDraft({ ...userDraft, user_id: event.target.value })}>
+              <option value="">Not linked</option>
+              {(members.data ?? []).map((member) => (
+                <option key={member.id} value={member.user_id}>
+                  {member.email}
+                </option>
+              ))}
+            </Select>
           </div>
           <div className="space-y-2 md:col-span-2">
             <Label>Display name</Label>

@@ -21,6 +21,14 @@ def test_quality_flags_empty_and_sensitive_content() -> None:
     assert any(issue["code"] == "potential_aws_access_key" for issue in report.issues)
 
 
+def test_quality_warnings_do_not_block_ingestion_review() -> None:
+    report = analyze_quality("Contact finance@example.com for the published annual report details. " * 4, [])
+
+    assert not report.requires_review
+    assert report.severity == "warning"
+    assert any(issue["code"] == "potential_email" for issue in report.issues)
+
+
 def test_recursive_chunking_preserves_text() -> None:
     text = " ".join(f"token{i}" for i in range(300))
     chunks = chunk_text(text, strategy="recursive", chunk_size_tokens=80, overlap_tokens=10)

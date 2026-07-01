@@ -66,6 +66,6 @@ def analyze_quality(text: str, extraction_warnings: list[dict[str, Any]]) -> Qua
 
     severities = {issue.get("severity", "warning") for issue in issues}
     severity = "critical" if "critical" in severities else "warning" if "warning" in severities else "ok"
-    requires_review = severity == "critical" or any(issue["code"].startswith("potential_") for issue in issues)
+    requires_review = severity == "critical"
     summary = "No quality issues detected." if not issues else f"{len(issues)} quality issue(s) detected."
     return QualityReport(issues=issues, severity=severity, requires_review=requires_review, summary=summary)

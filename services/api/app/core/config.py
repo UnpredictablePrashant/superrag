@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     web_base_url: str = "http://localhost:3000"
     database_url: str = "postgresql+psycopg2://rag:rag@localhost:5432/rag_console"
     redis_url: str = "redis://localhost:6379/0"
+    kafka_enabled: bool = False
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_pipeline_topic: str = "rag.pipeline-runs"
+    kafka_pipeline_consumer_group: str = "rag-pipeline-workers"
+    kafka_fallback_to_celery: bool = True
     jwt_secret: str = Field(default="dev-only-change-me", min_length=16)
     session_cookie_name: str = "rag_console_session"
     session_ttl_minutes: int = 60 * 24 * 7

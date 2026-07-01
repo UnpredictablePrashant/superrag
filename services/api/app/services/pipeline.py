@@ -41,6 +41,14 @@ def process_pipeline_run(db: Session, pipeline_run_id: UUID) -> None:
     run = db.get(PipelineRun, pipeline_run_id)
     if not run:
         return
+    if run.current_stage in {
+        PipelineStage.COMPLETED,
+        PipelineStage.COMPLETED_WITH_WARNINGS,
+        PipelineStage.AWAITING_REVIEW,
+        PipelineStage.FAILED,
+        PipelineStage.CANCELLED,
+    }:
+        return
     start = time.perf_counter()
     run.started_at = datetime.now(UTC)
     run.current_stage = PipelineStage.VALIDATING

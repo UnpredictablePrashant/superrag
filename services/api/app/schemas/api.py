@@ -420,6 +420,163 @@ class CompanyProfileDetailOut(CompanyProfileOut):
     evidence: list[CompanyEvidenceOut] = []
 
 
+class RelationshipRoleOut(APIModel):
+    id: UUID
+    relationship_entity_id: UUID
+    role_name: str
+    confidence: float | None
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+
+
+class RelationshipEvidenceOut(APIModel):
+    id: UUID
+    relationship_entity_id: UUID | None
+    deal_id: UUID | None
+    interaction_id: UUID | None
+    action_item_id: UUID | None
+    document_id: UUID | None
+    connector_item_id: UUID | None
+    field_name: str
+    source_type: str
+    source_url: str | None
+    excerpt: str | None
+    confidence: float | None
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+
+
+class RelationshipEntityOut(APIModel):
+    id: UUID
+    name: str
+    normalized_name: str
+    entity_type: str
+    summary: str | None
+    sector: str | None
+    geography: str | None
+    website_url: str | None
+    relationship_owner_user_id: UUID | None
+    last_interaction_at: datetime | None
+    next_action_at: datetime | None
+    confidence: float | None
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+    updated_at: datetime
+    role_names: list[str] = []
+    evidence_count: int = 0
+    open_action_count: int = 0
+
+
+class InteractionOut(APIModel):
+    id: UUID
+    title: str
+    interaction_type: str
+    occurred_at: datetime | None
+    source_type: str
+    source_url: str | None
+    document_id: UUID | None
+    connector_item_id: UUID | None
+    summary: str | None
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+    updated_at: datetime
+    participants: list[dict[str, Any]] = []
+
+
+class DealOut(APIModel):
+    id: UUID
+    name: str
+    deal_type: str
+    stage: str
+    company_entity_id: UUID | None
+    relationship_owner_user_id: UUID | None
+    amount: float | None
+    currency: str | None
+    expected_close_date: datetime | None
+    summary: str | None
+    confidence: float | None
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+    updated_at: datetime
+    participants: list[dict[str, Any]] = []
+
+
+class ActionItemOut(APIModel):
+    id: UUID
+    title: str
+    description: str | None
+    relationship_entity_id: UUID | None
+    deal_id: UUID | None
+    interaction_id: UUID | None
+    owner_user_id: UUID | None
+    due_at: datetime | None
+    priority: str
+    status: str
+    source_type: str
+    confidence: float | None
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+    updated_at: datetime
+    entity_name: str | None = None
+    deal_name: str | None = None
+
+
+class ActionItemCreateIn(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    description: str | None = Field(default=None, max_length=4000)
+    relationship_entity_id: UUID | None = None
+    deal_id: UUID | None = None
+    interaction_id: UUID | None = None
+    owner_user_id: UUID | None = None
+    due_at: datetime | None = None
+    priority: Literal["low", "medium", "high"] = "medium"
+
+
+class ActionItemPatchIn(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    description: str | None = Field(default=None, max_length=4000)
+    owner_user_id: UUID | None = None
+    due_at: datetime | None = None
+    priority: Literal["low", "medium", "high"] | None = None
+    status: Literal["open", "done", "dismissed"] | None = None
+
+
+class RelationshipEntityDetailOut(RelationshipEntityOut):
+    roles: list[RelationshipRoleOut] = []
+    evidence: list[RelationshipEvidenceOut] = []
+    interactions: list[InteractionOut] = []
+    deals: list[DealOut] = []
+    action_items: list[ActionItemOut] = []
+
+
+class RelationshipSummaryOut(BaseModel):
+    entity_count: int
+    client_count: int
+    investor_count: int
+    contact_count: int
+    open_action_count: int
+    overdue_action_count: int
+    deal_count: int
+    interaction_count: int
+    review_count: int
+    recent_interactions: list[InteractionOut]
+    upcoming_actions: list[ActionItemOut]
+
+
+class RelationshipRescanIn(BaseModel):
+    document_ids: list[UUID] = []
+
+
+class RelationshipRescanOut(BaseModel):
+    entities: int
+    interactions: int
+    actions: int
+    deals: int
+
+
 class ProfileOut(APIModel):
     id: UUID
     name: str

@@ -9,6 +9,7 @@ import {
   ClipboardList,
   DatabaseZap,
   Files,
+  Handshake,
   LogOut,
   MessageSquare,
   Settings,
@@ -23,6 +24,7 @@ import * as React from "react";
 
 const nav = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
+  { href: "/relationships", label: "Relationships", icon: Handshake },
   { href: "/directory", label: "Directory", icon: Files },
   { href: "/profile", label: "Profile", icon: UserCircle },
   { href: "/data", label: "Data Hub", icon: DatabaseZap, adminOnly: true },

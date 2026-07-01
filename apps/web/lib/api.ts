@@ -329,6 +329,149 @@ export interface CompanyProfile {
   updated_at: string;
 }
 
+export interface RelationshipRole {
+  id: string;
+  relationship_entity_id: string;
+  role_name: string;
+  confidence?: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RelationshipEvidence {
+  id: string;
+  relationship_entity_id?: string | null;
+  deal_id?: string | null;
+  interaction_id?: string | null;
+  action_item_id?: string | null;
+  document_id?: string | null;
+  connector_item_id?: string | null;
+  field_name: string;
+  source_type: string;
+  source_url?: string | null;
+  excerpt?: string | null;
+  confidence?: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RelationshipEntity {
+  id: string;
+  name: string;
+  normalized_name: string;
+  entity_type: string;
+  summary?: string | null;
+  sector?: string | null;
+  geography?: string | null;
+  website_url?: string | null;
+  relationship_owner_user_id?: string | null;
+  last_interaction_at?: string | null;
+  next_action_at?: string | null;
+  confidence?: number | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  role_names: string[];
+  evidence_count: number;
+  open_action_count: number;
+  roles?: RelationshipRole[];
+  evidence?: RelationshipEvidence[];
+  interactions?: RelationshipInteraction[];
+  deals?: RelationshipDeal[];
+  action_items?: RelationshipActionItem[];
+}
+
+export interface RelationshipInteraction {
+  id: string;
+  title: string;
+  interaction_type: string;
+  occurred_at?: string | null;
+  source_type: string;
+  source_url?: string | null;
+  document_id?: string | null;
+  connector_item_id?: string | null;
+  summary?: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  participants: Array<Record<string, unknown>>;
+}
+
+export interface RelationshipDeal {
+  id: string;
+  name: string;
+  deal_type: string;
+  stage: string;
+  company_entity_id?: string | null;
+  relationship_owner_user_id?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  expected_close_date?: string | null;
+  summary?: string | null;
+  confidence?: number | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  participants: Array<Record<string, unknown>>;
+}
+
+export interface RelationshipActionItem {
+  id: string;
+  title: string;
+  description?: string | null;
+  relationship_entity_id?: string | null;
+  deal_id?: string | null;
+  interaction_id?: string | null;
+  owner_user_id?: string | null;
+  due_at?: string | null;
+  priority: "low" | "medium" | "high" | string;
+  status: "open" | "done" | "dismissed" | string;
+  source_type: string;
+  confidence?: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  entity_name?: string | null;
+  deal_name?: string | null;
+}
+
+export interface RelationshipSummary {
+  entity_count: number;
+  client_count: number;
+  investor_count: number;
+  contact_count: number;
+  open_action_count: number;
+  overdue_action_count: number;
+  deal_count: number;
+  interaction_count: number;
+  review_count: number;
+  recent_interactions: RelationshipInteraction[];
+  upcoming_actions: RelationshipActionItem[];
+}
+
+export interface RelationshipActionItemCreateInput {
+  title: string;
+  description?: string | null;
+  relationship_entity_id?: string | null;
+  deal_id?: string | null;
+  interaction_id?: string | null;
+  owner_user_id?: string | null;
+  due_at?: string | null;
+  priority?: "low" | "medium" | "high";
+}
+
+export interface RelationshipActionItemPatchInput {
+  title?: string;
+  description?: string | null;
+  owner_user_id?: string | null;
+  due_at?: string | null;
+  priority?: "low" | "medium" | "high";
+  status?: "open" | "done" | "dismissed";
+}
+
 export interface McpSetup {
   mcp_url: string;
   token: string;
@@ -787,4 +930,54 @@ export function listCompanyProfiles(search?: string) {
 
 export function getCompanyProfile(id: string) {
   return api<CompanyProfile>(`/company-profiles/${id}`);
+}
+
+export function getRelationshipSummary() {
+  return api<RelationshipSummary>("/relationships/summary");
+}
+
+export function listRelationshipEntities(filters: { search?: string; entity_type?: string; role?: string; status_filter?: string } = {}) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value);
+  }
+  const qs = params.toString();
+  return api<RelationshipEntity[]>(`/relationships/entities${qs ? `?${qs}` : ""}`);
+}
+
+export function getRelationshipEntity(id: string) {
+  return api<RelationshipEntity>(`/relationships/entities/${id}`);
+}
+
+export function listRelationshipInteractions() {
+  return api<RelationshipInteraction[]>("/relationships/interactions");
+}
+
+export function listRelationshipDeals() {
+  return api<RelationshipDeal[]>("/relationships/deals");
+}
+
+export function listRelationshipActionItems(status?: string) {
+  return api<RelationshipActionItem[]>(`/relationships/action-items${status ? `?status_filter=${encodeURIComponent(status)}` : ""}`);
+}
+
+export function createRelationshipActionItem(payload: RelationshipActionItemCreateInput) {
+  return api<RelationshipActionItem>("/relationships/action-items", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateRelationshipActionItem(id: string, payload: RelationshipActionItemPatchInput) {
+  return api<RelationshipActionItem>(`/relationships/action-items/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function rescanRelationships(documentIds: string[] = []) {
+  return api<{ entities: number; interactions: number; actions: number; deals: number }>("/relationships/rescan", {
+    method: "POST",
+    body: JSON.stringify({ document_ids: documentIds }),
+  });
 }

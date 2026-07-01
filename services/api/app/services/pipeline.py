@@ -34,6 +34,7 @@ from app.services.eta import StageWork, estimate_completion_seconds
 from app.services.extraction import extract_document
 from app.services.profiles import ensure_default_profiles
 from app.services.quality import analyze_quality
+from app.services.relationship_intelligence import process_document_relationship_intelligence
 from app.services.storage import get_object_bytes
 
 
@@ -309,6 +310,37 @@ def _process_document(db: Session, run: PipelineRun, run_doc: PipelineRunDocumen
     run_doc.status = PipelineStage.COMPLETED_WITH_WARNINGS if quality.issues else PipelineStage.COMPLETED
     run_doc.progress_percentage = 100
     run_doc.warnings = [*quality.issues, *cleaned.warnings]
+    try:
+        intelligence = process_document_relationship_intelligence(
+            db,
+            document=document,
+            text=retrieval_text,
+        )
+        if any(intelligence.values()):
+            run.worker_logs = [
+                *run.worker_logs[-100:],
+                {
+                    "stage": PipelineStage.INDEXING.value,
+                    "item": document.original_filename,
+                    "message": (
+                        "Relationship intelligence indexed "
+                        f"{intelligence['entities']} entit(ies), "
+                        f"{intelligence['interactions']} interaction(s), "
+                        f"{intelligence['actions']} action item(s), "
+                        f"and {intelligence['deals']} deal signal(s)."
+                    ),
+                    "at": datetime.now(UTC).isoformat(),
+                },
+            ]
+    except Exception as exc:
+        run_doc.warnings = [
+            *run_doc.warnings,
+            {
+                "code": "relationship_intelligence_failed",
+                "severity": "warning",
+                "message": f"Relationship intelligence extraction skipped: {str(exc)[:240]}",
+            },
+        ]
     db.commit()
 
 

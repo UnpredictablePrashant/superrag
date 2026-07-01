@@ -195,3 +195,13 @@ Connector `config` is stored as connector configuration, so avoid putting long-l
 ## Chat Usage
 
 After saving and testing an MCP connector, open Chat, enable `MCP Tools`, and select the connector. Testing caches the detected tools on the connector. Tools are active by default; turn individual tools off with the detected tool toggles, which writes `disabled_tool_names` into connector config. Tool tags can still mark tools for `web_search` or `knowledge_lookup`.
+
+## Granola Meeting Notes
+
+Data Hub includes a Granola MCP preset for relationship intelligence. It points at:
+
+```text
+https://mcp.granola.ai/mcp
+```
+
+Granola MCP uses browser OAuth for each user. It does not provide an MCP service-account/API-key mode, so a banker must authenticate their own Granola account before tools can return meeting notes. The preset stores `sync_tool_calls` so an authenticated connector can save recent client, investor, decision, next-step, and action-item meeting context as indexed documents. Those documents then feed the Relationship Intelligence workspace.

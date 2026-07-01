@@ -172,6 +172,34 @@ class MCPConnector(ConnectorAdapter):
             text = _mcp_result_text(result)
             if text.strip():
                 documents.append(self.normalize(text, uri))
+        tool_calls = options.get("tool_calls", self.connection.config.get("sync_tool_calls", []))
+        if isinstance(tool_calls, list):
+            for index, call in enumerate(tool_calls, start=1):
+                if not isinstance(call, dict):
+                    continue
+                tool_name = str(call.get("name") or call.get("tool_name") or "").strip()
+                if not tool_name:
+                    continue
+                arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+                result = self.call_tool(tool_name, arguments)
+                text = _mcp_result_text(result)
+                if text.strip():
+                    title = str(call.get("title") or f"{tool_name} result {index}")
+                    documents.append(
+                        ConnectorDocument(
+                            external_id=f"mcp-tool:{self.connection.id}:{tool_name}:{sha256_bytes(json.dumps(arguments, sort_keys=True).encode())[:16]}",
+                            title=title,
+                            source_url=f"mcp://{self.connection.name}/{tool_name}",
+                            filename=f"{_safe_filename(title)}.md",
+                            content_type="text/markdown",
+                            data=text.encode("utf-8"),
+                            metadata={
+                                "source_type": "mcp_tool_result",
+                                "tool_name": tool_name,
+                                "mcp_server": self.connection.name,
+                            },
+                        )
+                    )
         return documents
 
     def normalize(self, payload: Any, source_url: str | None = None) -> ConnectorDocument:

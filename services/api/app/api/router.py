@@ -16,6 +16,7 @@ from app.api.routes import (
     pipeline_runs,
     profiles,
     providers,
+    relationships,
     retrieval,
     team_chat,
     telegram,
@@ -36,6 +37,7 @@ api_router.include_router(providers.router)
 api_router.include_router(profiles.router)
 api_router.include_router(connectors.router)
 api_router.include_router(company_profiles.router)
+api_router.include_router(relationships.router)
 api_router.include_router(chat.router)
 api_router.include_router(team_chat.router)
 api_router.include_router(retrieval.router)

@@ -366,6 +366,201 @@ class CompanyEvidence(UUIDMixin, TimestampMixin, Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
 
 
+class RelationshipEntity(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
+    __tablename__ = "relationship_entities"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "normalized_name", "entity_type"),
+        Index("ix_relationship_entities_org_type", "organization_id", "entity_type"),
+        Index("ix_relationship_entities_org_last", "organization_id", "last_interaction_at"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(260), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text)
+    sector: Mapped[str | None] = mapped_column(String(180))
+    geography: Mapped[str | None] = mapped_column(String(180))
+    website_url: Mapped[str | None] = mapped_column(Text)
+    relationship_owner_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    status: Mapped[str] = mapped_column(String(40), default="suggested", nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
+class RelationshipEntityAlias(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "relationship_entity_aliases"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "normalized_alias"),
+        Index("ix_relationship_aliases_entity", "relationship_entity_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    relationship_entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("relationship_entities.id", ondelete="CASCADE"), index=True
+    )
+    alias: Mapped[str] = mapped_column(String(260), nullable=False)
+    normalized_alias: Mapped[str] = mapped_column(String(300), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), default="extraction", nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+
+
+class RelationshipRole(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "relationship_roles"
+    __table_args__ = (
+        UniqueConstraint("relationship_entity_id", "role_name"),
+        Index("ix_relationship_roles_org_role", "organization_id", "role_name"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    relationship_entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("relationship_entities.id", ondelete="CASCADE"), index=True
+    )
+    role_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
+class Deal(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
+    __tablename__ = "deals"
+    __table_args__ = (
+        Index("ix_deals_org_stage", "organization_id", "stage"),
+        Index("ix_deals_org_company", "organization_id", "company_entity_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(260), nullable=False)
+    deal_type: Mapped[str] = mapped_column(String(80), default="opportunity", nullable=False)
+    stage: Mapped[str] = mapped_column(String(80), default="identified", nullable=False)
+    company_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("relationship_entities.id"))
+    relationship_owner_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    amount: Mapped[float | None] = mapped_column(Numeric)
+    currency: Mapped[str | None] = mapped_column(String(20))
+    expected_close_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    status: Mapped[str] = mapped_column(String(40), default="suggested", nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
+class DealParticipant(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "deal_participants"
+    __table_args__ = (
+        UniqueConstraint("deal_id", "relationship_entity_id", "role_name"),
+        Index("ix_deal_participants_entity", "organization_id", "relationship_entity_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    deal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), index=True)
+    relationship_entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("relationship_entities.id", ondelete="CASCADE"), index=True
+    )
+    role_name: Mapped[str] = mapped_column(String(80), nullable=False)
+
+
+class Interaction(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "interactions"
+    __table_args__ = (
+        Index("ix_interactions_org_occurred", "organization_id", "occurred_at"),
+        Index("ix_interactions_document", "document_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    interaction_type: Mapped[str] = mapped_column(String(80), default="note", nullable=False)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"))
+    connector_item_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("connector_items.id"))
+    summary: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), default="suggested", nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
+class InteractionParticipant(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "interaction_participants"
+    __table_args__ = (
+        UniqueConstraint("interaction_id", "relationship_entity_id", "role_name"),
+        Index("ix_interaction_participants_entity", "organization_id", "relationship_entity_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    interaction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("interactions.id", ondelete="CASCADE"), index=True
+    )
+    relationship_entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("relationship_entities.id", ondelete="CASCADE"), index=True
+    )
+    role_name: Mapped[str] = mapped_column(String(80), default="mentioned", nullable=False)
+
+
+class ActionItem(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "action_items"
+    __table_args__ = (
+        Index("ix_action_items_org_status_due", "organization_id", "status", "due_at"),
+        Index("ix_action_items_entity", "organization_id", "relationship_entity_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    relationship_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("relationship_entities.id"))
+    deal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("deals.id"))
+    interaction_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("interactions.id"))
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    priority: Mapped[str] = mapped_column(String(40), default="medium", nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="open", nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), default="extraction", nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
+class RelationshipEvidence(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "relationship_evidence"
+    __table_args__ = (
+        Index("ix_relationship_evidence_entity_field", "relationship_entity_id", "field_name"),
+        Index("ix_relationship_evidence_document", "document_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    relationship_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("relationship_entities.id"))
+    deal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("deals.id"))
+    interaction_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("interactions.id"))
+    action_item_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("action_items.id"))
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"))
+    chunk_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chunks.id"))
+    connector_item_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("connector_items.id"))
+    field_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    excerpt: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
+
+
+class EntityMention(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "entity_mentions"
+    __table_args__ = (
+        Index("ix_entity_mentions_entity", "relationship_entity_id"),
+        Index("ix_entity_mentions_document", "document_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    relationship_entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("relationship_entities.id", ondelete="CASCADE"), index=True
+    )
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"))
+    chunk_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chunks.id"))
+    mention_text: Mapped[str] = mapped_column(String(260), nullable=False)
+    normalized_mention: Mapped[str] = mapped_column(String(300), nullable=False)
+    context: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+
+
 class ModelProfile(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "model_profiles"
 

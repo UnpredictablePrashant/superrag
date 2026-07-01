@@ -81,6 +81,35 @@ const DEFAULT_MCP_CONFIG = `{
   }
 }`;
 
+const GRANOLA_MCP_CONFIG = `{
+  "mcpServers": {
+    "granola": {
+      "type": "http",
+      "url": "https://mcp.granola.ai/mcp",
+      "disabled": false
+    }
+  },
+  "tool_tags": {
+    "query_granola_meetings": ["meeting_notes", "relationship_intelligence"],
+    "list_meetings": ["meeting_notes"],
+    "get_meetings": ["meeting_notes", "relationship_intelligence"],
+    "get_meeting_transcript": ["meeting_transcript"]
+  },
+  "sync_tool_calls": [
+    {
+      "name": "query_granola_meetings",
+      "title": "Granola relationship meeting intelligence",
+      "arguments": {
+        "query": "Recent client, investor, and founder meetings. Include attendees, companies, decisions, next steps, action items, and open follow-ups."
+      }
+    }
+  ],
+  "granola": {
+    "oauth_required": true,
+    "relationship_intelligence": true
+  }
+}`;
+
 export default function DataHubPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -624,6 +653,19 @@ function SourceBuilder({
             <div className="space-y-2">
               <Label>Connector name</Label>
               <Input value={connectorName} onChange={(event) => setConnectorName(event.target.value)} />
+            </div>
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setConnectorName("Granola meeting notes");
+                  setMcpConfig(GRANOLA_MCP_CONFIG);
+                }}
+              >
+                <Bot className="h-4 w-4" aria-hidden />
+                Use Granola preset
+              </Button>
             </div>
           </div>
           <div className="space-y-2">

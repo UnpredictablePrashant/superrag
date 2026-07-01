@@ -42,6 +42,7 @@ GitHub Actions deployment to a single EC2 instance at `https://rag.atharvaai.com
 - Chat UI with sessions, streaming display, citation drawer, selected knowledge base, retrieval controls, and debug toggle.
 - Settings pages for providers, capability registry, profiles, notifications, security posture, and audit logs.
 - Telegram bot ingestion/querying, external MCP connector setup, and exposing this RAG workspace as an MCP server are documented in `docs/telegram.md` and `docs/mcp-connectors.md`.
+- Relationship Intelligence workspace for investment-banking client, investor, contact, interaction, deal, evidence, and action-item views is documented in `docs/relationship-intelligence.md`.
 - Terraform starter for S3, KMS, CloudWatch, and placeholders for ECS/Fargate, RDS pgvector, ElastiCache, ALB, and SES.
 
 ## Architecture Decisions

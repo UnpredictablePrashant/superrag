@@ -71,6 +71,18 @@ export interface ChatProfile {
   config: Record<string, unknown>;
 }
 
+export interface ChatProfileCreateInput {
+  provider_connection_id?: string | null;
+  name: string;
+  model_name: string;
+  supports_streaming?: boolean;
+  supports_structured_output?: boolean;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+  is_default?: boolean;
+  config?: Record<string, unknown>;
+}
+
 export interface EmbeddingProfile {
   id: string;
   name: string;
@@ -440,6 +452,13 @@ export function deleteChatSession(id: string) {
 
 export function listProfiles() {
   return api<ProfilesResponse>("/profiles");
+}
+
+export function createChatProfile(payload: ChatProfileCreateInput) {
+  return api<{ id: string; message: string }>("/profiles/chat", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function listProviderModels(refresh = false) {

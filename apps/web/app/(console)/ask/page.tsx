@@ -223,6 +223,7 @@ export default function AskPage() {
 
   const selectedKbName = kbs.data?.filter((kb) => selectedKbIds.includes(kb.id)).map((kb) => kb.name).join(", ");
   const selectedModel = profiles.data?.chat_profiles.find((profile) => profile.id === selectedModelProfileId);
+  const hasChatProfiles = Boolean(profiles.data?.chat_profiles.length);
   const availableModes = summary.data?.available_answer_modes ?? ["company_data"];
   const canUseWebSearch = availableModes.includes("live_web") || availableModes.includes("blended");
   const canUseMcpTools = availableModes.includes("mcp_tools") || availableModes.includes("blended");
@@ -412,13 +413,16 @@ export default function AskPage() {
           <div className="space-y-2">
             <label className="text-sm font-medium text-zinc-800">Model</label>
             <Select value={selectedModelProfileId} onChange={(event) => setSelectedModelProfileId(event.target.value)}>
-              {!(profiles.data?.chat_profiles ?? []).length ? <option value="">Local fallback</option> : null}
+              {!hasChatProfiles ? <option value="">Local fallback</option> : null}
               {(profiles.data?.chat_profiles ?? []).map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.provider} / {profile.model_name}
                 </option>
               ))}
             </Select>
+            {!hasChatProfiles ? (
+              <p className="text-xs text-amber-700">No LLM profile is configured. Answers will use retrieved citation snippets.</p>
+            ) : null}
           </div>
           {selectedCitation ? (
             <div className="rounded-md border border-zinc-200 p-3">

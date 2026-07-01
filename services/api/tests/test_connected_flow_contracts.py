@@ -1,8 +1,10 @@
 from app.api.routes.chat import _resolve_answer_mode
 from app.api.routes.workspace import _available_answer_modes, _chat_model_summary
 from app.schemas.api import ChatMessageCreateIn, ConnectorSyncIn
+from app.services.chat import ChatModelConfig, generate_grounded_answer
 from app.services.connectors import _configured_mcp_tool_names, _connector_supports_web_search
 from app.services.document_ingestion import apply_retrieval_defaults
+from app.services.retrieval import Candidate
 
 
 class Connection:
@@ -74,6 +76,32 @@ def test_workspace_chat_model_summary_does_not_report_embedding_fallback() -> No
 
     assert summary["provider"] == "LLM"
     assert summary["model_name"] == "not configured"
+
+
+def test_non_local_chat_profile_uses_llm_dispatch(monkeypatch) -> None:
+    def fake_dispatch(messages, model_config):
+        assert model_config.provider == "OpenAI"
+        assert "Axis bank PNL" in messages[-1]["content"]
+        return "LLM synthesized answer [1]"
+
+    monkeypatch.setattr("app.services.chat._dispatch_chat_provider", fake_dispatch)
+    answer = generate_grounded_answer(
+        "Axis bank PNL?",
+        [
+            Candidate(
+                "chunk-1",
+                "doc-1",
+                "Axis annual report.pdf",
+                "Axis Bank reported profit and loss details in the annual report.",
+                0.9,
+                "vector",
+                {},
+            )
+        ],
+        ChatModelConfig(provider="OpenAI", model_name="gpt-4.1", api_key="sk-test"),
+    )
+
+    assert answer.answer == "LLM synthesized answer [1]"
 
 
 def test_connector_sync_contract_carries_retrieval_index_config() -> None:

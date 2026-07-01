@@ -4,6 +4,7 @@ import { ErrorBox } from "@/components/error-box";
 import { StatusBadge } from "@/components/status-badge";
 import {
   api,
+  createChatProfile,
   createEmbeddingProfile,
   getTelegramIntegration,
   listConnectors,
@@ -454,10 +455,34 @@ function ProviderSettings() {
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Could not create embedding profile."),
   });
+  const createChat = useMutation({
+    mutationFn: (option: ModelOption) =>
+      createChatProfile({
+        provider_connection_id: option.provider_connection_id ?? null,
+        name: `${option.connection_name} ${option.model}`,
+        model_name: option.model,
+        supports_streaming: option.supports_streaming,
+        supports_structured_output: option.supports_structured_output,
+        context_window: option.maximum_context_window ?? null,
+        max_output_tokens: option.maximum_output_tokens ?? null,
+        is_default: !(profiles.data?.chat_profiles ?? []).some((profile) => profile.is_default),
+        config: {
+          provider: option.provider,
+          connection_name: option.connection_name,
+        },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      setError("");
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not create LLM profile."),
+  });
 
+  const chatOptions = (modelOptions.data ?? []).filter((option) => option.supports_chat && option.provider_connection_id);
   const embeddingOptions = (modelOptions.data ?? []).filter(
     (option) => option.supports_embeddings && ["Local", "OpenAI"].includes(option.provider),
   );
+  const existingChatProfiles = profiles.data?.chat_profiles ?? [];
   const existingEmbeddingProfiles = profiles.data?.embedding_profiles ?? [];
 
   async function test(id: string) {
@@ -529,6 +554,52 @@ function ProviderSettings() {
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-sky-700" aria-hidden />
           <h3 className="font-semibold text-zinc-950">Configured model options</h3>
+        </div>
+        <div className="mt-4 rounded-md border border-zinc-200 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-medium text-zinc-950">LLM answer models</h4>
+              <p className="mt-1 text-sm text-zinc-500">Create a chat model profile for synthesized answers.</p>
+            </div>
+            {createChat.isPending ? <Badge tone="amber">Saving</Badge> : null}
+          </div>
+          <div className="mt-3 space-y-2">
+            {chatOptions.map((option, index) => {
+              const existing = existingChatProfiles.find(
+                (profile) =>
+                  profile.provider === option.provider &&
+                  profile.model_name === option.model &&
+                  (profile.provider_connection_id ?? null) === (option.provider_connection_id ?? null),
+              );
+              return (
+                <div key={`${option.provider}-${option.model}-${index}`} className="flex flex-col gap-2 rounded-md bg-zinc-50 p-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-zinc-950">
+                      {option.provider} / {option.model}
+                    </p>
+                    <p className="text-xs text-zinc-500">
+                      {option.connection_name} / {option.maximum_context_window ? `${option.maximum_context_window.toLocaleString()} tokens` : "context unknown"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {existing?.is_default ? <Badge tone="green">Default</Badge> : existing ? <Badge tone="blue">Profile exists</Badge> : null}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={createChat.isPending || existing?.is_default}
+                      onClick={() => createChat.mutate(option)}
+                    >
+                      <Save className="h-4 w-4" aria-hidden />
+                      {existing ? "Create default copy" : "Enable"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+            {!chatOptions.length ? (
+              <p className="text-sm text-zinc-500">Add and test an OpenAI, Anthropic, Gemini, or xAI provider connection to enable LLM answers.</p>
+            ) : null}
+          </div>
         </div>
         <div className="mt-4 rounded-md border border-zinc-200 p-3">
           <div className="flex items-center justify-between gap-3">
@@ -1003,19 +1074,16 @@ function ModelProfileSettings({ profiles }: { profiles?: ProfilesResponse }) {
   }, [chatOptions, selectedKey]);
   const create = useMutation({
     mutationFn: () =>
-      api("/profiles/chat", {
-        method: "POST",
-        body: JSON.stringify({
-          provider_connection_id: selected?.provider_connection_id || undefined,
-          name: name || `${selected?.provider ?? "Local"} ${selected?.model ?? "model"}`,
-          model_name: selected?.model,
-          supports_streaming: selected?.supports_streaming ?? false,
-          supports_structured_output: selected?.supports_structured_output ?? false,
-          context_window: selected?.maximum_context_window || undefined,
-          max_output_tokens: selected?.maximum_output_tokens || undefined,
-          is_default: !(profiles?.chat_profiles ?? []).some((profile) => profile.is_default),
-          config: { provider: selected?.provider },
-        }),
+      createChatProfile({
+        provider_connection_id: selected?.provider_connection_id || undefined,
+        name: name || `${selected?.provider ?? "Local"} ${selected?.model ?? "model"}`,
+        model_name: selected?.model ?? "",
+        supports_streaming: selected?.supports_streaming ?? false,
+        supports_structured_output: selected?.supports_structured_output ?? false,
+        context_window: selected?.maximum_context_window || undefined,
+        max_output_tokens: selected?.maximum_output_tokens || undefined,
+        is_default: !(profiles?.chat_profiles ?? []).some((profile) => profile.is_default),
+        config: { provider: selected?.provider },
       }),
     onSuccess: () => {
       setName("");

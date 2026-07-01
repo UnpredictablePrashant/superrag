@@ -19,7 +19,7 @@ Add these repository secrets:
 - `EC2_SSH_KEY`: private SSH key that can connect to the instance.
 - `DATABASE_URL`: production database URL. For the bundled EC2 Postgres service, use host `postgres`.
 - `REDIS_URL`: production Redis URL. For the bundled EC2 Redis service, use `redis://redis:6379/0`.
-- `KAFKA_ENABLED=true` and `KAFKA_BOOTSTRAP_SERVERS=kafka:9092` for durable pipeline dispatch through the bundled Kafka broker.
+- `KAFKA_ENABLED=true` and `KAFKA_BOOTSTRAP_SERVERS=kafka:19092` for pipeline dispatch through the bundled Kafka broker.
 - `JWT_SECRET`: random session-signing secret with at least 32 characters.
 - `ENCRYPTION_KEY`: Fernet key used to encrypt provider credentials.
 - `AWS_ACCESS_KEY_ID`: AWS access key for S3 and SES. The workflow maps this to both `S3_ACCESS_KEY_ID` and `AWS_ACCESS_KEY_ID` in the container env.

@@ -5,13 +5,16 @@ import { api, getMe } from "@/lib/api";
 import type { Role } from "@rag-console/shared-types";
 import { Button, Input, Label, Panel, Select } from "@rag-console/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Send, Shield, UserRoundMinus } from "lucide-react";
+import { Save, Send, Shield, UserRoundMinus } from "lucide-react";
 import * as React from "react";
 
 interface Member {
   id: string;
   user_id: string;
   email: string;
+  full_name?: string | null;
+  phone_number?: string | null;
+  telegram_username?: string | null;
   role: Role;
   status: string;
   created_at: string;
@@ -31,7 +34,6 @@ export default function TeamPage() {
   const [email, setEmail] = React.useState("");
   const [role, setRole] = React.useState<Role>("Member");
   const [telegramUsername, setTelegramUsername] = React.useState("");
-  const [telegramUserId, setTelegramUserId] = React.useState("");
   const [telegramPhoneNumber, setTelegramPhoneNumber] = React.useState("");
   const [telegramCanIngest, setTelegramCanIngest] = React.useState(true);
   const [telegramCanAsk, setTelegramCanAsk] = React.useState(true);
@@ -49,7 +51,6 @@ export default function TeamPage() {
           email,
           role,
           telegram_username: telegramUsername || undefined,
-          telegram_user_id: telegramUserId ? Number(telegramUserId) : undefined,
           telegram_phone_number: telegramPhoneNumber || undefined,
           telegram_can_ingest: telegramCanIngest,
           telegram_can_query: telegramCanAsk,
@@ -59,7 +60,6 @@ export default function TeamPage() {
     onSuccess: () => {
       setEmail("");
       setTelegramUsername("");
-      setTelegramUserId("");
       setTelegramPhoneNumber("");
       setTelegramCanIngest(true);
       setTelegramCanAsk(true);
@@ -106,7 +106,7 @@ export default function TeamPage() {
               </Button>
             </div>
           </div>
-          <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_180px_1fr_140px_120px] lg:items-end">
+          <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_140px_120px] lg:items-end">
             <div className="space-y-2">
               <Label htmlFor="invite-telegram-username">Telegram username</Label>
               <Input
@@ -114,15 +114,6 @@ export default function TeamPage() {
                 value={telegramUsername}
                 onChange={(event) => setTelegramUsername(event.target.value)}
                 placeholder="@username"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="invite-telegram-id">Telegram ID</Label>
-              <Input
-                id="invite-telegram-id"
-                inputMode="numeric"
-                value={telegramUserId}
-                onChange={(event) => setTelegramUserId(event.target.value)}
               />
             </div>
             <div className="space-y-2">
@@ -155,36 +146,117 @@ export default function TeamPage() {
         </div>
         <div className="divide-y divide-zinc-100">
           {(members.data ?? []).map((member) => (
-            <div key={member.id} className="grid gap-3 px-4 py-3 lg:grid-cols-[1fr_180px_140px_auto] lg:items-center">
-              <div>
-                <p className="font-medium text-zinc-950">{member.email}</p>
-                <p className="text-xs text-zinc-500">{member.status}</p>
-              </div>
-              <Select
-                value={member.role}
-                disabled={!canManageTeam || !canManageMember(currentRole, member.role)}
-                onChange={(event) => updateMember(member.id, { role: event.target.value })}
-              >
-                {[member.role, ...manageableRoles.filter((item) => item !== member.role)].map((item) => (
-                  <option key={item}>{item}</option>
-                ))}
-              </Select>
-              <span className="inline-flex items-center gap-2 text-sm text-zinc-600">
-                <Shield className="h-4 w-4" aria-hidden />
-                {member.role}
-              </span>
-              <Button
-                variant="secondary"
-                disabled={!canManageTeam || !canManageMember(currentRole, member.role)}
-                onClick={() => updateMember(member.id, { status: "removed" })}
-              >
-                <UserRoundMinus className="h-4 w-4" aria-hidden />
-                Remove
-              </Button>
-            </div>
+            <MemberRow
+              key={member.id}
+              member={member}
+              canManageTeam={canManageTeam}
+              currentRole={currentRole}
+              manageableRoles={manageableRoles}
+              onUpdate={updateMember}
+            />
           ))}
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function MemberRow({
+  member,
+  canManageTeam,
+  currentRole,
+  manageableRoles,
+  onUpdate,
+}: {
+  member: Member;
+  canManageTeam: boolean;
+  currentRole: Role | undefined;
+  manageableRoles: Role[];
+  onUpdate: (memberId: string, patch: Record<string, unknown>) => Promise<void>;
+}) {
+  const canEdit = canManageTeam && canManageMember(currentRole, member.role);
+  const [email, setEmail] = React.useState(member.email);
+  const [fullName, setFullName] = React.useState(member.full_name ?? "");
+  const [phoneNumber, setPhoneNumber] = React.useState(member.phone_number ?? "");
+  const [telegramUsername, setTelegramUsername] = React.useState(member.telegram_username ?? "");
+
+  React.useEffect(() => {
+    setEmail(member.email);
+    setFullName(member.full_name ?? "");
+    setPhoneNumber(member.phone_number ?? "");
+    setTelegramUsername(member.telegram_username ?? "");
+  }, [member.email, member.full_name, member.phone_number, member.telegram_username]);
+
+  return (
+    <div className="space-y-3 px-4 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="font-medium text-zinc-950">{member.full_name || member.email}</p>
+          <p className="text-xs text-zinc-500">{member.status}</p>
+        </div>
+        <span className="inline-flex items-center gap-2 text-sm text-zinc-600">
+          <Shield className="h-4 w-4" aria-hidden />
+          {member.role}
+        </span>
+      </div>
+      <div className="grid gap-3 xl:grid-cols-[1fr_1fr_160px_180px_150px_auto] xl:items-end">
+        <div className="space-y-2">
+          <Label htmlFor={`member-email-${member.id}`}>Email</Label>
+          <Input id={`member-email-${member.id}`} type="email" value={email} disabled={!canEdit} onChange={(event) => setEmail(event.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`member-name-${member.id}`}>Name</Label>
+          <Input id={`member-name-${member.id}`} value={fullName} disabled={!canEdit} onChange={(event) => setFullName(event.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`member-phone-${member.id}`}>Phone</Label>
+          <Input id={`member-phone-${member.id}`} value={phoneNumber} disabled={!canEdit} onChange={(event) => setPhoneNumber(event.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`member-telegram-${member.id}`}>Telegram username</Label>
+          <Input
+            id={`member-telegram-${member.id}`}
+            value={telegramUsername}
+            disabled={!canEdit}
+            onChange={(event) => setTelegramUsername(event.target.value)}
+            placeholder="@username"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`member-role-${member.id}`}>Role</Label>
+          <Select
+            id={`member-role-${member.id}`}
+            value={member.role}
+            disabled={!canEdit}
+            onChange={(event) => onUpdate(member.id, { role: event.target.value })}
+          >
+            {[member.role, ...manageableRoles.filter((item) => item !== member.role)].map((item) => (
+              <option key={item}>{item}</option>
+            ))}
+          </Select>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            disabled={!canEdit || !email}
+            onClick={() =>
+              onUpdate(member.id, {
+                email,
+                full_name: fullName || null,
+                phone_number: phoneNumber || null,
+                telegram_username: telegramUsername || null,
+              })
+            }
+          >
+            <Save className="h-4 w-4" aria-hidden />
+            Save
+          </Button>
+          <Button variant="secondary" disabled={!canEdit} onClick={() => onUpdate(member.id, { status: "removed" })}>
+            <UserRoundMinus className="h-4 w-4" aria-hidden />
+            Remove
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

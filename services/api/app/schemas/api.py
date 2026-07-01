@@ -6,7 +6,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models.entities import ConfidentialityLevel, MemberRole, PipelineStage, ProviderKind
+from app.models.entities import (
+    ChatPresenceStatus,
+    ConfidentialityLevel,
+    MemberRole,
+    PipelineStage,
+    ProviderKind,
+)
 
 
 class APIModel(BaseModel):
@@ -47,8 +53,14 @@ class MemberOut(APIModel):
     id: UUID
     user_id: UUID
     email: EmailStr | None = None
+    full_name: str | None = None
+    phone_number: str | None = None
+    telegram_username: str | None = None
     role: MemberRole
     status: str
+    chat_status: ChatPresenceStatus = ChatPresenceStatus.OFFLINE
+    status_message: str | None = None
+    status_updated_at: datetime | None = None
     created_at: datetime
 
 
@@ -92,8 +104,17 @@ class InvitationCreateIn(BaseModel):
 
 
 class MemberPatchIn(BaseModel):
+    email: EmailStr | None = None
+    full_name: str | None = Field(default=None, max_length=200)
+    phone_number: str | None = Field(default=None, max_length=40)
+    telegram_username: str | None = Field(default=None, max_length=160)
     role: MemberRole | None = None
     status: Literal["active", "removed"] | None = None
+
+
+class ChatPresencePatchIn(BaseModel):
+    chat_status: ChatPresenceStatus
+    status_message: str | None = Field(default=None, max_length=160)
 
 
 class KnowledgeBaseCreateIn(BaseModel):
@@ -578,6 +599,67 @@ class ChatTurnOut(BaseModel):
     suggested_questions: list[str]
 
 
+class TeamChatParticipantOut(APIModel):
+    user_id: UUID
+    email: EmailStr
+    full_name: str | None = None
+    role: str
+    chat_status: ChatPresenceStatus = ChatPresenceStatus.OFFLINE
+    status_message: str | None = None
+    status_updated_at: datetime | None = None
+    last_read_at: datetime | None = None
+
+
+class TeamChatMessageCreateIn(BaseModel):
+    content: str = Field(min_length=1, max_length=8000)
+
+
+class TeamChatMessagePatchIn(BaseModel):
+    content: str = Field(min_length=1, max_length=8000)
+
+
+class TeamChatMessageOut(APIModel):
+    id: UUID
+    conversation_id: UUID
+    user_id: UUID
+    email: EmailStr
+    full_name: str | None = None
+    content: str
+    edited_at: datetime | None
+    deleted_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TeamChatConversationCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    member_user_ids: list[UUID] = []
+
+
+class TeamChatDirectCreateIn(BaseModel):
+    user_id: UUID
+
+
+class TeamChatParticipantsAddIn(BaseModel):
+    user_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class TeamChatConversationOut(APIModel):
+    id: UUID
+    kind: Literal["channel", "direct"]
+    name: str | None
+    description: str | None
+    created_by_user_id: UUID
+    is_archived: bool
+    last_message_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    participants: list[TeamChatParticipantOut]
+    unread_count: int = 0
+    latest_message: TeamChatMessageOut | None = None
+
+
 class RetrievalSearchIn(BaseModel):
     query: str
     knowledge_base_ids: list[UUID] = []
@@ -604,6 +686,47 @@ class AuditLogOut(APIModel):
     resource_id: str | None
     metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
     created_at: datetime
+
+
+class AIUsageRollupOut(BaseModel):
+    request_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0
+
+
+class AIUsageUserOut(AIUsageRollupOut):
+    user_id: str
+    email: EmailStr | None = None
+    full_name: str | None = None
+
+
+class AIUsageModelOut(AIUsageRollupOut):
+    model_config = ConfigDict(protected_namespaces=())
+
+    provider: str
+    model: str
+    model_profile_id: str | None = None
+    pricing_source: str | None = None
+    input_cost_per_1m: float = 0
+    output_cost_per_1m: float = 0
+
+
+class AIUsageEventOut(AIUsageRollupOut):
+    created_at: datetime
+    user_id: str
+    email: EmailStr | None = None
+    provider: str
+    model: str
+
+
+class AIUsageSummaryOut(BaseModel):
+    days: int
+    totals: AIUsageRollupOut
+    by_user: list[AIUsageUserOut]
+    by_model: list[AIUsageModelOut]
+    recent_events: list[AIUsageEventOut]
 
 
 class WorkspaceSummaryOut(BaseModel):

@@ -70,6 +70,12 @@ def process_telegram_update(db: Session, integration: TelegramIntegration, updat
     db.flush()
     client = _client(integration)
     try:
+        if mode == "start":
+            allowed = _authorize_sender(db, integration, message)
+            log.status = "completed" if allowed else "rejected"
+            client.send_message(chat_id, _start_text(allowed))
+            db.commit()
+            return
         allowed = _authorize_sender(db, integration, message)
         if not allowed:
             log.status = "rejected"
@@ -187,7 +193,9 @@ def _source_type(message: dict[str, Any]) -> str:
 
 def _message_mode(message: dict[str, Any]) -> str:
     text = str(message.get("text") or message.get("caption") or "").strip()
-    if text.startswith("/help") or text.startswith("/start"):
+    if text.startswith("/start"):
+        return "start"
+    if text.startswith("/help"):
         return "help"
     if text.startswith("/ask"):
         return "ask"
@@ -467,8 +475,33 @@ def _normalize_phone(phone_number: Any) -> str | None:
 def _help_text() -> str:
     return (
         "Telegram RAG commands:\n"
+        "/start - set up this chat\n"
         "/add your note - add text to the knowledge base\n"
         "/ask your question - query the knowledge base\n"
         "Send a document to ingest it.\n"
         "Send a voice note to transcribe, refine, and ingest it."
+    )
+
+
+def _start_text(allowed: TelegramAllowedUser | None) -> str:
+    if not allowed:
+        return (
+            "Welcome to the Unitus Capital knowledge bot.\n\n"
+            "I could not match this Telegram account to an approved Unitus Capital user yet. "
+            "Ask an admin to add your Telegram username or phone number in Team Management or Settings, "
+            "then send /start again."
+        )
+    actions = []
+    if allowed.can_query:
+        actions.append("/ask your question - ask the Unitus Capital knowledge base")
+    if allowed.can_ingest:
+        actions.append("/add your note - add a note for indexing")
+        actions.append("Send a document or voice note to add it to the knowledge base")
+    if not actions:
+        actions.append("Your account is approved, but no Telegram actions are enabled yet. Ask an admin to update your permissions.")
+    return (
+        "Welcome to the Unitus Capital knowledge bot.\n\n"
+        "You're connected. Use this chat to work with approved Unitus Capital knowledge.\n\n"
+        + "\n".join(actions)
+        + "\n\nSend /help anytime to see the command list."
     )

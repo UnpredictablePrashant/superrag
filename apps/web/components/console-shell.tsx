@@ -22,13 +22,13 @@ import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 
 const nav = [
-  { href: "/ask", label: "Ask", icon: MessageSquare },
+  { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/directory", label: "Directory", icon: Files },
   { href: "/profile", label: "Profile", icon: UserCircle },
   { href: "/data", label: "Data Hub", icon: DatabaseZap, adminOnly: true },
   { href: "/activity", label: "Activity", icon: ClipboardList, adminOnly: true },
   { href: "/team", label: "Team", icon: Users, adminOnly: true },
-  { href: "/help", label: "Docs", icon: BookOpen },
+  { href: "/help", label: "Docs", icon: BookOpen, adminOnly: true },
   { href: "/settings", label: "Admin Settings", icon: Settings, adminOnly: true },
 ];
 
@@ -117,10 +117,10 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             <Button variant="secondary" size="icon" title="Notifications">
               <Bell className="h-4 w-4" aria-hidden />
             </Button>
-            <Link href="/ask">
+            <Link href="/chat">
               <Button>
                 <MessageSquare className="h-4 w-4" aria-hidden />
-                Ask
+                Chat
               </Button>
             </Link>
           </div>

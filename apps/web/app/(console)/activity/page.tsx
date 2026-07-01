@@ -2,12 +2,12 @@
 
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
-import { api, getWorkspaceSummary, listConnectors, listDocuments, listPipelineRuns, listTelegramMessages } from "@/lib/api";
-import { formatDuration, shortDate } from "@/lib/format";
+import { api, getAiUsageSummary, getWorkspaceSummary, listConnectors, listDocuments, listPipelineRuns, listTelegramMessages } from "@/lib/api";
+import { formatCurrency, formatDuration, formatNumber, shortDate } from "@/lib/format";
 import type { DocumentRecord, PipelineRun } from "@rag-console/shared-types";
 import { Badge, Panel } from "@rag-console/ui";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Bell, Bot, FileStack, Plug, RefreshCw } from "lucide-react";
+import { Activity, Bell, Bot, Coins, FileStack, Plug, RefreshCw } from "lucide-react";
 import Link from "next/link";
 
 export default function ActivityPage() {
@@ -17,6 +17,7 @@ export default function ActivityPage() {
   const connectors = useQuery({ queryKey: ["connectors"], queryFn: listConnectors, refetchInterval: 10000 });
   const telegramMessages = useQuery({ queryKey: ["telegram-messages"], queryFn: listTelegramMessages, refetchInterval: 5000 });
   const notifications = useQuery({ queryKey: ["notifications"], queryFn: () => api<Array<Record<string, unknown>>>("/notifications") });
+  const aiUsage = useQuery({ queryKey: ["ai-usage", 30], queryFn: () => getAiUsageSummary(30), refetchInterval: 30000 });
 
   const reviewDocs = (documents.data ?? []).filter((doc) => ["AWAITING_REVIEW", "FAILED"].includes(doc.processing_status));
   const failedConnectors = (connectors.data ?? []).filter((connection) => connection.status === "error" || connection.last_sync_status === "failed");
@@ -28,12 +29,50 @@ export default function ActivityPage() {
         <p className="mt-1 text-sm text-zinc-500">Watch ingestion, source health, review work, and notifications.</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <ActivityStat label="Review items" value={summary.data?.review_item_count ?? 0} />
         <ActivityStat label="Failed syncs" value={summary.data?.failed_sync_count ?? 0} />
         <ActivityStat label="Indexed docs" value={summary.data?.indexed_document_count ?? 0} />
         <ActivityStat label="Active sources" value={summary.data?.active_source_count ?? 0} />
+        <ActivityStat label="AI spend" value={formatCurrency(aiUsage.data?.totals.cost_usd)} />
       </div>
+
+      <Panel className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Coins className="h-5 w-5 text-emerald-700" aria-hidden />
+            <h3 className="font-semibold text-zinc-950">AI assistant usage</h3>
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs text-zinc-500">
+            <Badge>{formatNumber(aiUsage.data?.totals.total_tokens)} tokens</Badge>
+            <Badge>{aiUsage.data?.totals.request_count ?? 0} request(s)</Badge>
+            <Badge>{formatCurrency(aiUsage.data?.totals.cost_usd)}</Badge>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <UsageTable
+            title="By user"
+            rows={(aiUsage.data?.by_user ?? []).map((row) => ({
+              key: row.user_id,
+              name: row.full_name || row.email || row.user_id,
+              detail: row.email && row.full_name ? row.email : `${row.request_count} request(s)`,
+              tokens: row.total_tokens,
+              cost: row.cost_usd,
+            }))}
+          />
+          <UsageTable
+            title="By model"
+            rows={(aiUsage.data?.by_model ?? []).map((row) => ({
+              key: `${row.provider}:${row.model}`,
+              name: row.model,
+              detail: `${row.provider} / ${row.pricing_source ?? "pricing"}`,
+              tokens: row.total_tokens,
+              cost: row.cost_usd,
+            }))}
+          />
+        </div>
+        {!aiUsage.data?.totals.request_count ? <p className="mt-4 text-sm text-zinc-500">No AI assistant usage recorded in the last 30 days.</p> : null}
+      </Panel>
 
       <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
         <Panel className="overflow-hidden">
@@ -139,7 +178,7 @@ export default function ActivityPage() {
   );
 }
 
-function ActivityStat({ label, value }: { label: string; value: number }) {
+function ActivityStat({ label, value }: { label: string; value: number | string }) {
   return (
     <Panel className="p-4">
       <div className="flex items-center gap-3">
@@ -152,6 +191,35 @@ function ActivityStat({ label, value }: { label: string; value: number }) {
         </div>
       </div>
     </Panel>
+  );
+}
+
+function UsageTable({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<{ key: string; name: string; detail: string; tokens: number; cost: number }>;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-zinc-200">
+      <div className="border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-950">{title}</div>
+      <div className="divide-y divide-zinc-100">
+        {rows.slice(0, 8).map((row) => (
+          <div key={row.key} className="grid grid-cols-[1fr_auto] gap-3 px-3 py-3 text-sm">
+            <div className="min-w-0">
+              <p className="truncate font-medium text-zinc-950">{row.name}</p>
+              <p className="truncate text-xs text-zinc-500">{row.detail}</p>
+            </div>
+            <div className="text-right">
+              <p className="font-medium text-zinc-950">{formatCurrency(row.cost)}</p>
+              <p className="text-xs text-zinc-500">{formatNumber(row.tokens)} tokens</p>
+            </div>
+          </div>
+        ))}
+        {!rows.length ? <p className="px-3 py-3 text-sm text-zinc-500">No usage yet.</p> : null}
+      </div>
+    </div>
   );
 }
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import mimetypes
 from datetime import UTC, datetime
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,7 +23,12 @@ from app.models.entities import (
 )
 from app.schemas.api import DocumentOut, DocumentPatchIn, ReviewActionIn
 from app.services.audit import write_audit_log
-from app.services.storage import build_object_key, put_object_bytes, validate_upload
+from app.services.storage import (
+    build_object_key,
+    get_object_bytes,
+    put_object_bytes,
+    validate_upload,
+)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -235,6 +243,24 @@ def preview_document(
             .order_by(DerivedDocumentContent.created_at.desc())
         )
     return {"kind": content.kind if content else None, "text": content.text[:20000] if content else ""}
+
+
+@router.get("/{document_id}/download")
+def download_document(
+    document_id: UUID,
+    disposition: str = Query(default="attachment", pattern="^(attachment|inline)$"),
+    ctx: AuthContext = Depends(require_organization),
+    db: Session = Depends(get_db),
+) -> Response:
+    document = _get_document(db, ctx.organization_id, document_id)
+    data = get_object_bytes(document.s3_object_key)
+    content_type = mimetypes.guess_type(document.original_filename)[0] or "application/octet-stream"
+    filename = quote(document.original_filename)
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{filename}"},
+    )
 
 
 def _get_document(db: Session, organization_id: UUID, document_id: UUID) -> Document:

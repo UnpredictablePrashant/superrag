@@ -5,6 +5,7 @@ import { ErrorBox } from "@/components/error-box";
 import { StatusBadge } from "@/components/status-badge";
 import {
   api,
+  Category,
   ConnectorConnection,
   ConnectorItem,
   ConnectorRun,
@@ -32,12 +33,13 @@ import {
   TelegramIntegration,
   TelegramMessageLog,
   updateDocument,
+  uploadArchive,
   uploadDocument,
 } from "@/lib/api";
 import { formatBytes, shortDate } from "@/lib/format";
 import type { Confidentiality, DocumentRecord, KnowledgeBase } from "@rag-console/shared-types";
 import { Badge, Button, Input, Label, Panel, Select, Textarea } from "@rag-console/ui";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   Archive,
   Bot,
@@ -47,6 +49,8 @@ import {
   Eye,
   FileUp,
   FileText,
+  FolderPlus,
+  FolderTree,
   Globe,
   History,
   Pencil,
@@ -338,6 +342,8 @@ function SourceBuilder({
   const queryClient = useQueryClient();
   const [sourceType, setSourceType] = React.useState<"files" | "web" | "mcp">("files");
   const [files, setFiles] = React.useState<File[]>([]);
+  const [categoryId, setCategoryId] = React.useState("");
+  const [newCategoryPath, setNewCategoryPath] = React.useState("");
   const [tags, setTags] = React.useState("default");
   const [confidentiality, setConfidentiality] = React.useState<Confidentiality>("Internal");
   const [connectorName, setConnectorName] = React.useState("");
@@ -346,6 +352,17 @@ function SourceBuilder({
   const [companyName, setCompanyName] = React.useState("");
   const [mcpConfig, setMcpConfig] = React.useState(DEFAULT_MCP_CONFIG);
   const [isBusy, setIsBusy] = React.useState(false);
+  const categories = useQuery({
+    queryKey: ["categories", selectedKbId],
+    enabled: Boolean(selectedKbId),
+    queryFn: () => api<Category[]>(`/knowledge-bases/${selectedKbId}/categories`),
+  });
+
+  React.useEffect(() => {
+    if (categoryId && !(categories.data ?? []).some((category) => category.id === categoryId)) {
+      setCategoryId("");
+    }
+  }, [categories.data, categoryId]);
 
   function addFiles(nextFiles: File[]) {
     setFiles((current) => {
@@ -369,14 +386,19 @@ function SourceBuilder({
     setIsBusy(true);
     try {
       const uploaded: DocumentRecord[] = [];
+      const targetCategoryId = await resolveCategoryId(selectedKbId, newCategoryPath, categoryId, categories.data ?? [], queryClient);
       for (const file of files) {
-        uploaded.push(
-          await uploadDocument(file, {
+        const payload = {
             knowledge_base_id: selectedKbId,
+            category_id: targetCategoryId,
             tags: splitList(tags),
             confidentiality,
-          }),
-        );
+        };
+        if (isArchiveFile(file)) {
+          uploaded.push(...(await uploadArchive(file, payload)));
+        } else {
+          uploaded.push(await uploadDocument(file, payload));
+        }
       }
       const run = await createPipelineRun({
         knowledge_base_id: selectedKbId,
@@ -384,6 +406,7 @@ function SourceBuilder({
         retrieval_index_config: { source: "data_hub_upload", reindex_strategy: "full_replace_chunks_and_vectors" },
       });
       setFiles([]);
+      setNewCategoryPath("");
       onNotice(`Uploaded ${uploaded.length} file(s). RAG pipeline queued with ${run.total_count} document(s).`);
       queryClient.invalidateQueries({ queryKey: ["documents"] });
       queryClient.invalidateQueries({ queryKey: ["pipeline-runs"] });
@@ -489,6 +512,42 @@ function SourceBuilder({
               </option>
             ))}
           </Select>
+        </div>
+        <div className="space-y-2">
+          <Label>Folder</Label>
+          <Select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
+            <option value="">Uncategorized</option>
+            {(categories.data ?? []).map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.path}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="space-y-2 md:col-span-2">
+          <Label>New folder path</Label>
+          <div className="flex gap-2">
+            <Input value={newCategoryPath} onChange={(event) => setNewCategoryPath(event.target.value)} placeholder="Projects/Alpha" />
+            <Button
+              size="icon"
+              variant="secondary"
+              disabled={!selectedKbId || !newCategoryPath.trim() || isBusy}
+              onClick={async () => {
+                setIsBusy(true);
+                try {
+                  const createdId = await resolveCategoryId(selectedKbId, newCategoryPath, "", categories.data ?? [], queryClient);
+                  setCategoryId(createdId ?? "");
+                  setNewCategoryPath("");
+                } catch (err) {
+                  onError(err instanceof Error ? err.message : "Could not create folder.");
+                } finally {
+                  setIsBusy(false);
+                }
+              }}
+            >
+              <FolderPlus className="h-4 w-4" aria-hidden />
+            </Button>
+          </div>
         </div>
         <div className="space-y-2">
           <Label>Confidentiality</Label>
@@ -676,7 +735,6 @@ function TelegramSourcePanel({
   const [autoVoice, setAutoVoice] = React.useState(true);
   const [userDraft, setUserDraft] = React.useState({
     username: "",
-    telegram_user_id: "",
     phone_number: "",
     display_name: "",
     user_id: "",
@@ -752,7 +810,6 @@ function TelegramSourcePanel({
         method: "POST",
         body: JSON.stringify({
           username: userDraft.username || undefined,
-          telegram_user_id: userDraft.telegram_user_id ? Number(userDraft.telegram_user_id) : undefined,
           phone_number: userDraft.phone_number || undefined,
           display_name: userDraft.display_name || undefined,
           user_id: userDraft.user_id || undefined,
@@ -762,7 +819,6 @@ function TelegramSourcePanel({
       });
       setUserDraft({
         username: "",
-        telegram_user_id: "",
         phone_number: "",
         display_name: "",
         user_id: "",
@@ -854,7 +910,7 @@ function TelegramSourcePanel({
             <h4 className="font-semibold text-zinc-950">Allowed users</h4>
             <div className="mt-3 grid gap-2">
               <Input value={userDraft.username} onChange={(event) => setUserDraft({ ...userDraft, username: event.target.value })} placeholder="@username" />
-              <Input value={userDraft.telegram_user_id} onChange={(event) => setUserDraft({ ...userDraft, telegram_user_id: event.target.value })} placeholder="Telegram user ID" />
+              <Input value={userDraft.phone_number} onChange={(event) => setUserDraft({ ...userDraft, phone_number: event.target.value })} placeholder="+91..." />
               <Input value={userDraft.display_name} onChange={(event) => setUserDraft({ ...userDraft, display_name: event.target.value })} placeholder="Display name" />
               <Select value={userDraft.user_id} onChange={(event) => setUserDraft({ ...userDraft, user_id: event.target.value })}>
                 <option value="">Link RAG account for Ask</option>
@@ -868,7 +924,7 @@ function TelegramSourcePanel({
                 <Toggle label="Can ingest" checked={userDraft.can_ingest} onChange={(value) => setUserDraft({ ...userDraft, can_ingest: value })} />
                 <Toggle label="Can ask" checked={userDraft.can_query} onChange={(value) => setUserDraft({ ...userDraft, can_query: value })} />
               </div>
-              <Button disabled={!userDraft.username && !userDraft.telegram_user_id && !userDraft.phone_number} onClick={addAllowedUser}>
+              <Button disabled={!userDraft.username && !userDraft.phone_number} onClick={addAllowedUser}>
                 <Check className="h-4 w-4" aria-hidden />
                 Allow user
               </Button>
@@ -877,7 +933,7 @@ function TelegramSourcePanel({
               {(allowedUsers.data ?? []).map((user) => (
                 <div key={user.id} className="flex items-center justify-between gap-3 py-2">
                   <div>
-                    <p className="text-sm font-medium text-zinc-950">{user.display_name || user.username || user.telegram_user_id}</p>
+                    <p className="text-sm font-medium text-zinc-950">{user.display_name || user.username || user.phone_number || "Telegram user"}</p>
                     <div className="mt-1 flex gap-2">
                       {user.can_ingest ? <Badge tone="green">Ingest</Badge> : null}
                       {user.can_query ? <Badge tone="blue">Ask</Badge> : null}
@@ -990,12 +1046,18 @@ function KnowledgePanel({
   const [previewKind, setPreviewKind] = React.useState("cleaned");
   const [editingDocId, setEditingDocId] = React.useState("");
   const [editName, setEditName] = React.useState("");
+  const [editCategoryId, setEditCategoryId] = React.useState("");
   const [editTags, setEditTags] = React.useState("");
   const [editBusinessUnit, setEditBusinessUnit] = React.useState("");
   const [editConfidentiality, setEditConfidentiality] = React.useState<Confidentiality>("Internal");
   const [busyAction, setBusyAction] = React.useState("");
   const [panelError, setPanelError] = React.useState("");
   const [panelNotice, setPanelNotice] = React.useState("");
+  const categories = useQuery({
+    queryKey: ["categories", selectedKbId],
+    enabled: Boolean(selectedKbId),
+    queryFn: () => api<Category[]>(`/knowledge-bases/${selectedKbId}/categories`),
+  });
 
   React.useEffect(() => {
     setSelectedIds((current) => current.filter((id) => docs.some((doc) => doc.id === id)));
@@ -1010,6 +1072,7 @@ function KnowledgePanel({
   const editingDoc = docs.find((doc) => doc.id === editingDocId);
   const selectedDocs = docs.filter((doc) => selectedIds.includes(doc.id));
   const allVisibleSelected = docs.length > 0 && docs.every((doc) => selectedIds.includes(doc.id));
+  const categoryPathById = new Map((categories.data ?? []).map((category) => [category.id, category.path]));
 
   function toggleSelected(id: string) {
     setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
@@ -1018,6 +1081,7 @@ function KnowledgePanel({
   function editDocument(doc: DocumentRecord) {
     setEditingDocId(doc.id);
     setEditName(doc.name);
+    setEditCategoryId(doc.category_id ?? "");
     setEditTags(doc.tags.join(", "));
     setEditBusinessUnit(doc.business_unit ?? "");
     setEditConfidentiality(doc.confidentiality);
@@ -1061,6 +1125,7 @@ function KnowledgePanel({
     try {
       const updated = await updateDocument(editingDoc.id, {
         name: editName,
+        category_id: editCategoryId || null,
         tags: splitList(editTags),
         business_unit: editBusinessUnit,
         confidentiality: editConfidentiality,
@@ -1151,6 +1216,7 @@ function KnowledgePanel({
                 />
               </th>
               <th className="px-4 py-3">Document</th>
+              <th className="px-4 py-3">Folder</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Security</th>
               <th className="px-4 py-3">Updated</th>
@@ -1168,6 +1234,12 @@ function KnowledgePanel({
                   <p className="text-xs text-zinc-500">
                     v{doc.version_number} / {formatBytes(doc.file_size)} / {doc.source_url ?? doc.original_filename}
                   </p>
+                </td>
+                <td className="px-4 py-3">
+                  <span className="inline-flex max-w-56 items-center gap-2 truncate text-zinc-700">
+                    <FolderTree className="h-4 w-4 flex-none text-zinc-400" aria-hidden />
+                    <span className="truncate">{doc.category_id ? categoryPathById.get(doc.category_id) ?? "Folder" : "Uncategorized"}</span>
+                  </span>
                 </td>
                 <td className="px-4 py-3">
                   <StatusBadge status={doc.processing_status} />
@@ -1240,6 +1312,17 @@ function KnowledgePanel({
                 <div className="space-y-2 md:col-span-2">
                   <Label>Name</Label>
                   <Input value={editName} onChange={(event) => setEditName(event.target.value)} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Folder</Label>
+                  <Select value={editCategoryId} onChange={(event) => setEditCategoryId(event.target.value)}>
+                    <option value="">Uncategorized</option>
+                    {(categories.data ?? []).map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.path}
+                      </option>
+                    ))}
+                  </Select>
                 </div>
                 <div className="space-y-2">
                   <Label>Tags</Label>
@@ -1458,8 +1541,45 @@ function splitList(value: string) {
     .filter(Boolean);
 }
 
+async function resolveCategoryId(
+  knowledgeBaseId: string,
+  newPath: string,
+  existingCategoryId: string,
+  categories: Category[],
+  queryClient: QueryClient,
+) {
+  const parts = newPath
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return existingCategoryId || undefined;
+  let parentId: string | null = null;
+  let currentPath = "";
+  let knownCategories = [...categories];
+  let lastCategory: Category | undefined;
+  for (const part of parts) {
+    currentPath = currentPath ? `${currentPath}/${part}` : part;
+    lastCategory = knownCategories.find((category) => category.path.toLowerCase() === currentPath.toLowerCase());
+    if (!lastCategory) {
+      lastCategory = await api<Category>(`/knowledge-bases/${knowledgeBaseId}/categories`, {
+        method: "POST",
+        body: JSON.stringify({ name: part, parent_id: parentId || undefined }),
+      });
+      knownCategories = [...knownCategories, lastCategory];
+    }
+    parentId = lastCategory.id;
+  }
+  queryClient.invalidateQueries({ queryKey: ["categories", knowledgeBaseId] });
+  return lastCategory?.id;
+}
+
 function fileKey(file: File) {
   return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function isArchiveFile(file: File) {
+  const name = file.name.toLowerCase();
+  return name.endsWith(".zip") || name.endsWith(".tar") || name.endsWith(".tar.gz") || name.endsWith(".tgz");
 }
 
 function parseMcpConfig(value: string): Record<string, unknown> {

@@ -23,3 +23,11 @@ export function shortDate(value?: string | null) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
     .format(new Date(value));
 }
+
+export function formatCurrency(value?: number | null) {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 4 }).format(value ?? 0);
+}
+
+export function formatNumber(value?: number | null) {
+  return new Intl.NumberFormat(undefined).format(value ?? 0);
+}

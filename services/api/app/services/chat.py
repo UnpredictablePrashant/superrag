@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,21 @@ class GroundedAnswer:
     answer: str
     citations: list[dict]
     suggested_questions: list[str]
+    usage: ChatUsage | None = None
+
+
+@dataclass
+class ChatUsage:
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    source: str = "estimated"
+
+
+@dataclass
+class ChatCompletionResult:
+    text: str
+    usage: ChatUsage
 
 
 @dataclass
@@ -77,23 +93,33 @@ def generate_grounded_answer(
                 "Has the relevant document completed ingestion?",
             ],
         )
-    answer = complete_with_chat_model(_grounded_messages(query, context), model_config)
+    completion = complete_with_chat_model_result(_grounded_messages(query, context), model_config)
     return GroundedAnswer(
-        answer=answer,
+        answer=completion.text,
         citations=citations,
         suggested_questions=[
             "Show the source details for this answer.",
             "What are the exceptions or edge cases?",
             "Summarize this by document.",
         ],
+        usage=completion.usage,
     )
 
 
 def complete_with_chat_model(messages: list[dict[str, str]], model_config: ChatModelConfig) -> str:
+    return complete_with_chat_model_result(messages, model_config).text
+
+
+def complete_with_chat_model_result(messages: list[dict[str, str]], model_config: ChatModelConfig) -> ChatCompletionResult:
     if model_config.provider == "Local":
         user_content = next((message["content"] for message in messages if message["role"] == "user"), "")
-        return user_content.strip()
-    return _dispatch_chat_provider(messages, model_config)
+        text = user_content.strip()
+        return ChatCompletionResult(text=text, usage=_estimated_usage(messages, text, source="local"))
+    result = _dispatch_chat_provider(messages, model_config)
+    if isinstance(result, ChatCompletionResult):
+        return result
+    text = str(result)
+    return ChatCompletionResult(text=text, usage=_estimated_usage(messages, text))
 
 
 def generate_local_grounded_answer(query: str, candidates: list[Candidate]) -> GroundedAnswer:
@@ -131,7 +157,7 @@ def generate_local_grounded_answer(query: str, candidates: list[Candidate]) -> G
     )
 
 
-def _dispatch_chat_provider(messages: list[dict[str, str]], model_config: ChatModelConfig) -> str:
+def _dispatch_chat_provider(messages: list[dict[str, str]], model_config: ChatModelConfig) -> ChatCompletionResult | str:
     if model_config.provider in {"OpenAI", "xAI Grok"}:
         return _call_openai_compatible_chat(messages, model_config)
     if model_config.provider == "Anthropic":
@@ -154,7 +180,7 @@ def _grounded_messages(query: str, context: str) -> list[dict[str, str]]:
 def _call_openai_compatible_chat(
     messages: list[dict[str, str]],
     model_config: ChatModelConfig,
-) -> str:
+) -> ChatCompletionResult:
     base_url = (
         model_config.base_url
         or (
@@ -177,13 +203,16 @@ def _call_openai_compatible_chat(
             json=payload,
         )
     response.raise_for_status()
-    choices = response.json().get("choices", [])
+    body = response.json()
+    choices = body.get("choices", [])
     if not choices:
-        return "The selected model returned no answer."
-    return str(choices[0].get("message", {}).get("content") or "").strip()
+        text = "The selected model returned no answer."
+    else:
+        text = str(choices[0].get("message", {}).get("content") or "").strip()
+    return ChatCompletionResult(text=text, usage=_usage_from_openai_response(body, messages, text))
 
 
-def _call_anthropic_chat(messages: list[dict[str, str]], model_config: ChatModelConfig) -> str:
+def _call_anthropic_chat(messages: list[dict[str, str]], model_config: ChatModelConfig) -> ChatCompletionResult:
     system = messages[0]["content"]
     user_messages = [message for message in messages if message["role"] != "system"]
     payload = {
@@ -204,11 +233,13 @@ def _call_anthropic_chat(messages: list[dict[str, str]], model_config: ChatModel
             json=payload,
         )
     response.raise_for_status()
-    blocks = response.json().get("content", [])
-    return "\n".join(str(block.get("text", "")) for block in blocks if block.get("type") == "text").strip()
+    body = response.json()
+    blocks = body.get("content", [])
+    text = "\n".join(str(block.get("text", "")) for block in blocks if block.get("type") == "text").strip()
+    return ChatCompletionResult(text=text, usage=_usage_from_anthropic_response(body, messages, text))
 
 
-def _call_gemini_chat(messages: list[dict[str, str]], model_config: ChatModelConfig) -> str:
+def _call_gemini_chat(messages: list[dict[str, str]], model_config: ChatModelConfig) -> ChatCompletionResult:
     prompt = "\n\n".join(f"{message['role'].upper()}:\n{message['content']}" for message in messages)
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -222,11 +253,14 @@ def _call_gemini_chat(messages: list[dict[str, str]], model_config: ChatModelCon
     with httpx.Client(timeout=90) as client:
         response = client.post(url, headers={"x-goog-api-key": model_config.api_key or ""}, json=payload)
     response.raise_for_status()
-    candidates = response.json().get("candidates", [])
+    body = response.json()
+    candidates = body.get("candidates", [])
     if not candidates:
-        return "The selected model returned no answer."
+        text = "The selected model returned no answer."
+        return ChatCompletionResult(text=text, usage=_usage_from_gemini_response(body, messages, text))
     parts = candidates[0].get("content", {}).get("parts", [])
-    return "\n".join(str(part.get("text", "")) for part in parts if part.get("text")).strip()
+    text = "\n".join(str(part.get("text", "")) for part in parts if part.get("text")).strip()
+    return ChatCompletionResult(text=text, usage=_usage_from_gemini_response(body, messages, text))
 
 
 def _source_label(source: str) -> str:
@@ -235,3 +269,44 @@ def _source_label(source: str) -> str:
     if source in {"vector", "keyword", "hybrid_rrf", "local_reranker"}:
         return "Indexed KB"
     return source
+
+
+def _usage_from_openai_response(body: dict[str, Any], messages: list[dict[str, str]], output_text: str) -> ChatUsage:
+    usage = body.get("usage") or {}
+    input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or input_tokens + output_tokens)
+    if input_tokens or output_tokens or total_tokens:
+        return ChatUsage(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens, source="provider")
+    return _estimated_usage(messages, output_text)
+
+
+def _usage_from_anthropic_response(body: dict[str, Any], messages: list[dict[str, str]], output_text: str) -> ChatUsage:
+    usage = body.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    if input_tokens or output_tokens:
+        return ChatUsage(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=input_tokens + output_tokens, source="provider")
+    return _estimated_usage(messages, output_text)
+
+
+def _usage_from_gemini_response(body: dict[str, Any], messages: list[dict[str, str]], output_text: str) -> ChatUsage:
+    usage = body.get("usageMetadata") or {}
+    input_tokens = int(usage.get("promptTokenCount") or 0)
+    output_tokens = int(usage.get("candidatesTokenCount") or 0)
+    total_tokens = int(usage.get("totalTokenCount") or input_tokens + output_tokens)
+    if input_tokens or output_tokens or total_tokens:
+        return ChatUsage(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens, source="provider")
+    return _estimated_usage(messages, output_text)
+
+
+def _estimated_usage(messages: list[dict[str, str]], output_text: str, source: str = "estimated") -> ChatUsage:
+    input_tokens = sum(_estimate_tokens(message.get("content", "")) for message in messages)
+    output_tokens = _estimate_tokens(output_text)
+    return ChatUsage(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=input_tokens + output_tokens, source=source)
+
+
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, math.ceil(len(text) / 4))

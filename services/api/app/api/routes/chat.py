@@ -30,6 +30,7 @@ from app.services.connectors import live_connector_candidates
 from app.services.model_runtime import resolve_chat_model
 from app.services.openai_web_search import openai_web_search_candidates
 from app.services.retrieval import Candidate, retrieve
+from app.services.usage import record_chat_model_usage
 
 router = APIRouter(prefix="/chat-sessions", tags=["chat"])
 
@@ -282,6 +283,18 @@ def create_chat_message(
     )
     db.add(assistant_message)
     db.flush()
+    if answer.usage:
+        record_chat_model_usage(
+            db,
+            organization_id=ctx.organization_id,
+            user_id=ctx.user.id,
+            chat_session_id=session.id,
+            user_message_id=user_message.id,
+            assistant_message_id=assistant_message.id,
+            retrieval_event_id=event.id,
+            model_config=chat_model,
+            usage=answer.usage,
+        )
     if requested_format:
         assistant_message.metadata_json = {
             **assistant_metadata,

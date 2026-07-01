@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import tarfile
+import zipfile
+from dataclasses import dataclass
+from io import BytesIO
+from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID
 
@@ -13,6 +19,7 @@ from app.core.config import settings
 from app.core.security import sha256_bytes
 from app.db.session import get_db
 from app.models.entities import (
+    Category,
     ConfidentialityLevel,
     Document,
     DocumentStatus,
@@ -21,7 +28,9 @@ from app.models.entities import (
 )
 from app.schemas.api import DocumentOut, UploadCompleteIn, UploadPresignIn, UploadPresignOut
 from app.services.audit import write_audit_log
+from app.services.document_ingestion import create_uploaded_document_from_bytes
 from app.services.storage import (
+    SUPPORTED_EXTENSIONS,
     build_object_key,
     create_multipart_presigned_urls,
     create_presigned_put,
@@ -33,6 +42,15 @@ from app.services.storage import (
 )
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
+
+MAX_ARCHIVE_FILES = 500
+
+
+@dataclass(frozen=True)
+class ArchiveMember:
+    path: PurePosixPath
+    data: bytes
+    content_type: str | None
 
 
 @router.post("", response_model=DocumentOut)
@@ -133,6 +151,82 @@ def upload_document(
     db.commit()
     db.refresh(document)
     return document
+
+
+@router.post("/archive", response_model=list[DocumentOut])
+def upload_archive(
+    request: Request,
+    file: UploadFile = File(...),
+    knowledge_base_id: UUID = Form(...),
+    category_id: UUID | None = Form(default=None),
+    tags: str = Form(default="[]"),
+    business_unit: str | None = Form(default=None),
+    confidentiality: ConfidentialityLevel = Form(default=ConfidentialityLevel.INTERNAL),
+    custom_metadata: str = Form(default="{}"),
+    ctx: AuthContext = Depends(capability("upload_documents")),
+    db: Session = Depends(get_db),
+) -> list[Document]:
+    kb = db.get(KnowledgeBase, knowledge_base_id)
+    if not kb or kb.organization_id != ctx.organization_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Knowledge base not found.")
+    base_category = _get_category(db, ctx.organization_id, knowledge_base_id, category_id) if category_id else None
+    archive_name = file.filename or "archive"
+    data = _read_upload_bytes(file)
+    members = _read_archive_members(archive_name, data)
+    if not members:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Archive does not contain supported documents.")
+
+    parsed_tags = _parse_tags_form(tags)
+    parsed_metadata = _parse_metadata_form(custom_metadata)
+    documents: list[Document] = []
+    for member in members:
+        member_category_id = _ensure_archive_category(
+            db,
+            organization_id=ctx.organization_id,
+            knowledge_base_id=knowledge_base_id,
+            base_category=base_category,
+            folder_parts=list(member.path.parent.parts),
+        )
+        document = create_uploaded_document_from_bytes(
+            db,
+            organization_id=ctx.organization_id,
+            knowledge_base_id=knowledge_base_id,
+            category_id=member_category_id,
+            filename=member.path.name,
+            data=member.data,
+            content_type=member.content_type,
+            uploaded_by_user_id=ctx.user.id,
+            tags=parsed_tags,
+            business_unit=business_unit or None,
+            confidentiality=confidentiality,
+            source_url=f"archive:{archive_name}:{member.path.as_posix()}",
+            custom_metadata={
+                **parsed_metadata,
+                "archive_name": archive_name,
+                "archive_path": member.path.as_posix(),
+            },
+        )
+        documents.append(document)
+
+    ip, ua = request_meta(request)
+    write_audit_log(
+        db,
+        organization_id=ctx.organization_id,
+        actor_user_id=ctx.user.id,
+        action="upload.archive_completed",
+        resource_type="document",
+        metadata={
+            "filename": archive_name,
+            "document_count": len(documents),
+            "transport": "archive",
+        },
+        ip_address=ip,
+        user_agent=ua,
+    )
+    db.commit()
+    for document in documents:
+        db.refresh(document)
+    return documents
 
 
 @router.post("/presign", response_model=UploadPresignOut)
@@ -278,6 +372,133 @@ def _read_upload_bytes(file: UploadFile) -> bytes:
         if len(data) > settings.max_upload_bytes:
             raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Upload is too large.")
     return bytes(data)
+
+
+def _read_archive_members(filename: str, data: bytes) -> list[ArchiveMember]:
+    suffixes = [suffix.lower() for suffix in PurePosixPath(filename).suffixes]
+    if suffixes and suffixes[-1] == ".zip":
+        return _read_zip_members(data)
+    if suffixes and (suffixes[-1] in {".tar", ".tgz"} or suffixes[-2:] == [".tar", ".gz"]):
+        return _read_tar_members(data)
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Upload a .zip, .tar, .tar.gz, or .tgz archive.")
+
+
+def _read_zip_members(data: bytes) -> list[ArchiveMember]:
+    try:
+        with zipfile.ZipFile(BytesIO(data)) as archive:
+            members = []
+            total_size = 0
+            for info in archive.infolist():
+                if info.is_dir() or _is_archive_system_path(info.filename):
+                    continue
+                path = _safe_archive_path(info.filename)
+                if PurePosixPath(path.name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    continue
+                total_size += info.file_size
+                _enforce_archive_limits(len(members) + 1, total_size)
+                members.append(ArchiveMember(path=path, data=archive.read(info), content_type=_guess_content_type(path.name)))
+            return members
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Archive is not a valid ZIP file.") from exc
+
+
+def _read_tar_members(data: bytes) -> list[ArchiveMember]:
+    try:
+        with tarfile.open(fileobj=BytesIO(data), mode="r:*") as archive:
+            members = []
+            total_size = 0
+            for info in archive.getmembers():
+                if not info.isfile() or _is_archive_system_path(info.name):
+                    continue
+                path = _safe_archive_path(info.name)
+                if PurePosixPath(path.name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    continue
+                total_size += info.size
+                _enforce_archive_limits(len(members) + 1, total_size)
+                extracted = archive.extractfile(info)
+                if not extracted:
+                    continue
+                members.append(ArchiveMember(path=path, data=extracted.read(), content_type=_guess_content_type(path.name)))
+            return members
+    except tarfile.TarError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Archive is not a valid TAR file.") from exc
+
+
+def _safe_archive_path(raw_path: str) -> PurePosixPath:
+    normalized = raw_path.replace("\\", "/").strip("/")
+    path = PurePosixPath(normalized)
+    if not path.name or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Archive contains an unsafe path: {raw_path}")
+    return path
+
+
+def _is_archive_system_path(raw_path: str) -> bool:
+    path = raw_path.replace("\\", "/").strip("/")
+    return path.startswith("__MACOSX/") or PurePosixPath(path).name in {".DS_Store", "Thumbs.db"}
+
+
+def _enforce_archive_limits(file_count: int, total_size: int) -> None:
+    if file_count > MAX_ARCHIVE_FILES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Archive contains more than {MAX_ARCHIVE_FILES} files.")
+    if total_size > settings.max_upload_bytes:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Expanded archive contents are too large.")
+
+
+def _guess_content_type(filename: str) -> str | None:
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed
+
+
+def _get_category(
+    db: Session,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+    category_id: UUID | None,
+) -> Category:
+    category = db.get(Category, category_id)
+    if (
+        not category
+        or category.organization_id != organization_id
+        or category.knowledge_base_id != knowledge_base_id
+        or category.deleted_at is not None
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Category not found.")
+    return category
+
+
+def _ensure_archive_category(
+    db: Session,
+    *,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+    base_category: Category | None,
+    folder_parts: list[str],
+) -> UUID | None:
+    parent = base_category
+    current_path = parent.path if parent else ""
+    for part in folder_parts:
+        current_path = f"{current_path}/{part}" if current_path else part
+        category = db.scalar(
+            select(Category).where(
+                Category.organization_id == organization_id,
+                Category.knowledge_base_id == knowledge_base_id,
+                Category.path == current_path,
+                Category.deleted_at.is_(None),
+            )
+        )
+        if not category:
+            category = Category(
+                organization_id=organization_id,
+                knowledge_base_id=knowledge_base_id,
+                parent_id=parent.id if parent else None,
+                name=part,
+                path=current_path,
+                access_policy={},
+            )
+            db.add(category)
+            db.flush()
+        parent = category
+    return parent.id if parent else None
 
 
 def _parse_tags_form(value: str) -> list[str]:

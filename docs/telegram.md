@@ -41,7 +41,6 @@ The app sends Telegram the integration's webhook secret token during registratio
 
 In `Settings -> Telegram`, add each approved user by at least one identifier:
 
-- Telegram user ID
 - Telegram username
 - Phone number
 
@@ -52,6 +51,7 @@ Admins can also enter Telegram identifiers while inviting a teammate from `Team 
 ## Telegram Commands
 
 ```text
+/start
 /help
 /add your note
 /ask your question
@@ -63,6 +63,6 @@ Plain text messages are treated as ingestable notes when text ingestion is enabl
 
 - `Telegram bot token is not configured`: save the bot token before testing or registering the webhook.
 - `Invalid Telegram webhook`: make sure the integration is enabled and the webhook was registered after the current `API_BASE_URL` was set.
-- `This Telegram account is not allowed`: add the sender to the allowed users list by username, Telegram ID, or phone number.
+- `This Telegram account is not allowed`: add the sender to the allowed users list by username or phone number.
 - `/ask` fails for a user: link that Telegram entry to an active RAG user ID in the same organization.
 - Voice transcription fails: add and enable an OpenAI provider connection.

@@ -253,6 +253,45 @@ export interface WorkspaceSummary {
   source_health: Record<string, number>;
 }
 
+export interface AIUsageRollup {
+  request_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+
+export interface AIUsageUser extends AIUsageRollup {
+  user_id: string;
+  email?: string | null;
+  full_name?: string | null;
+}
+
+export interface AIUsageModel extends AIUsageRollup {
+  provider: string;
+  model: string;
+  model_profile_id?: string | null;
+  pricing_source?: string | null;
+  input_cost_per_1m: number;
+  output_cost_per_1m: number;
+}
+
+export interface AIUsageSummary {
+  days: number;
+  totals: AIUsageRollup;
+  by_user: AIUsageUser[];
+  by_model: AIUsageModel[];
+  recent_events: Array<
+    AIUsageRollup & {
+      created_at: string;
+      user_id: string;
+      email?: string | null;
+      provider: string;
+      model: string;
+    }
+  >;
+}
+
 export interface DocumentQualityReport {
   id?: string;
   issues: Array<Record<string, unknown>>;
@@ -422,6 +461,25 @@ export function uploadDocument(file: File, payload: UploadDocumentInput) {
   });
 }
 
+export function uploadArchive(file: File, payload: UploadDocumentInput) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("knowledge_base_id", payload.knowledge_base_id);
+  formData.append("tags", JSON.stringify(payload.tags ?? []));
+  formData.append("custom_metadata", JSON.stringify(payload.custom_metadata ?? {}));
+  if (payload.category_id) formData.append("category_id", payload.category_id);
+  if (payload.business_unit) formData.append("business_unit", payload.business_unit);
+  if (payload.confidentiality) formData.append("confidentiality", payload.confidentiality);
+  return api<DocumentRecord[]>("/uploads/archive", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function documentDownloadUrl(documentId: string, disposition: "attachment" | "inline" = "attachment") {
+  return `${API_URL}/documents/${documentId}/download?disposition=${disposition}`;
+}
+
 export interface PipelineRunCreateInput {
   knowledge_base_id: string;
   document_ids: string[];
@@ -509,17 +567,124 @@ export function listTelegramMessages() {
   return api<TelegramMessageLog[]>("/integrations/telegram/messages");
 }
 
+export type ChatPresenceStatus = "online" | "busy" | "away" | "do_not_disturb" | "offline";
+
 export function listMembers() {
   return api<
     Array<{
       id: string;
       user_id: string;
       email: string;
+      full_name?: string | null;
+      phone_number?: string | null;
+      telegram_username?: string | null;
       role: Role;
       status: string;
+      chat_status: ChatPresenceStatus;
+      status_message?: string | null;
+      status_updated_at?: string | null;
       created_at: string;
     }>
   >("/organizations/members");
+}
+
+export interface TeamChatParticipant {
+  user_id: string;
+  email: string;
+  full_name?: string | null;
+  role: string;
+  chat_status: ChatPresenceStatus;
+  status_message?: string | null;
+  status_updated_at?: string | null;
+  last_read_at?: string | null;
+}
+
+export interface TeamChatMessage {
+  id: string;
+  conversation_id: string;
+  user_id: string;
+  email: string;
+  full_name?: string | null;
+  content: string;
+  edited_at?: string | null;
+  deleted_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TeamChatConversation {
+  id: string;
+  kind: "channel" | "direct";
+  name?: string | null;
+  description?: string | null;
+  created_by_user_id: string;
+  is_archived: boolean;
+  last_message_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  participants: TeamChatParticipant[];
+  unread_count: number;
+  latest_message?: TeamChatMessage | null;
+}
+
+export function listTeamChatConversations() {
+  return api<TeamChatConversation[]>("/team-chat/conversations");
+}
+
+export function createTeamChatChannel(payload: { name: string; description?: string; member_user_ids: string[] }) {
+  return api<TeamChatConversation>("/team-chat/channels", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createTeamChatDirect(userId: string) {
+  return api<TeamChatConversation>("/team-chat/direct", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+export function addTeamChatParticipants(conversationId: string, userIds: string[]) {
+  return api<TeamChatConversation>(`/team-chat/conversations/${conversationId}/participants`, {
+    method: "POST",
+    body: JSON.stringify({ user_ids: userIds }),
+  });
+}
+
+export function listTeamChatMessages(conversationId: string) {
+  return api<TeamChatMessage[]>(`/team-chat/conversations/${conversationId}/messages`);
+}
+
+export function createTeamChatMessage(conversationId: string, content: string) {
+  return api<TeamChatMessage>(`/team-chat/conversations/${conversationId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export function updateTeamChatMessage(conversationId: string, messageId: string, content: string) {
+  return api<TeamChatMessage>(`/team-chat/conversations/${conversationId}/messages/${messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export function deleteTeamChatMessage(conversationId: string, messageId: string) {
+  return api<TeamChatMessage>(`/team-chat/conversations/${conversationId}/messages/${messageId}`, {
+    method: "DELETE",
+  });
+}
+
+export function markTeamChatRead(conversationId: string) {
+  return api<TeamChatConversation>(`/team-chat/conversations/${conversationId}/read`, { method: "POST" });
+}
+
+export function updateTeamChatPresence(chatStatus: ChatPresenceStatus, statusMessage?: string | null) {
+  return api<TeamChatParticipant>("/team-chat/presence", {
+    method: "PATCH",
+    body: JSON.stringify({ chat_status: chatStatus, status_message: statusMessage || null }),
+  });
 }
 
 export function listConnectors() {
@@ -536,6 +701,10 @@ export function listConnectorItems(connectionId: string) {
 
 export function getWorkspaceSummary() {
   return api<WorkspaceSummary>("/workspace/summary");
+}
+
+export function getAiUsageSummary(days = 30) {
+  return api<AIUsageSummary>(`/usage/ai-assistant?days=${days}`);
 }
 
 export function getDocumentQualityReport(documentId: string) {

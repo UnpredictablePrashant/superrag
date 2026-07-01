@@ -34,6 +34,14 @@ class MemberRole(StrEnum):
     VIEWER = "Viewer"
 
 
+class ChatPresenceStatus(StrEnum):
+    ONLINE = "online"
+    BUSY = "busy"
+    AWAY = "away"
+    DO_NOT_DISTURB = "do_not_disturb"
+    OFFLINE = "offline"
+
+
 class ConfidentialityLevel(StrEnum):
     PUBLIC = "Public"
     INTERNAL = "Internal"
@@ -149,6 +157,13 @@ class OrganizationMember(UUIDMixin, TimestampMixin, Base):
     )
     role: Mapped[MemberRole] = mapped_column(Enum(MemberRole), nullable=False)
     status: Mapped[str] = mapped_column(String(40), default="active", nullable=False)
+    chat_status: Mapped[ChatPresenceStatus] = mapped_column(
+        Enum(ChatPresenceStatus),
+        default=ChatPresenceStatus.OFFLINE,
+        nullable=False,
+    )
+    status_message: Mapped[str | None] = mapped_column(String(160))
+    status_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization: Mapped[Organization] = relationship(back_populates="members")
     user: Mapped[User] = relationship(back_populates="memberships")
@@ -636,6 +651,53 @@ class ChatMessage(UUIDMixin, TimestampMixin, Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict, nullable=False)
 
 
+class TeamChatConversation(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "team_chat_conversations"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "direct_key"),
+        Index("ix_team_chat_conversations_org_last", "organization_id", "last_message_at"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    direct_key: Mapped[str | None] = mapped_column(String(160))
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TeamChatParticipant(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "team_chat_participants"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "user_id"),
+        Index("ix_team_chat_participants_user", "organization_id", "user_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("team_chat_conversations.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(40), default="member", nullable=False)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TeamChatMessage(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "team_chat_messages"
+    __table_args__ = (Index("ix_team_chat_messages_conversation_created", "conversation_id", "created_at"),)
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("team_chat_conversations.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class RetrievalEvent(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "retrieval_events"
 
@@ -723,4 +785,5 @@ class UsageMetric(UUIDMixin, TimestampMixin, Base):
 
 Index("ix_documents_org_checksum", Document.organization_id, Document.checksum)
 Index("ix_chat_messages_session_created", ChatMessage.chat_session_id, ChatMessage.created_at)
+Index("ix_team_chat_messages_org_created", TeamChatMessage.organization_id, TeamChatMessage.created_at)
 Index("ix_audit_logs_org_created", AuditLog.organization_id, AuditLog.created_at)

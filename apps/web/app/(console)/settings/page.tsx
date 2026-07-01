@@ -1208,7 +1208,6 @@ function TelegramSettings() {
   const [userDraft, setUserDraft] = React.useState({
     username: "",
     phone_number: "",
-    telegram_user_id: "",
     display_name: "",
     user_id: "",
     can_ingest: true,
@@ -1287,7 +1286,6 @@ function TelegramSettings() {
         body: JSON.stringify({
           username: userDraft.username || undefined,
           phone_number: userDraft.phone_number || undefined,
-          telegram_user_id: userDraft.telegram_user_id ? Number(userDraft.telegram_user_id) : undefined,
           display_name: userDraft.display_name || undefined,
           user_id: userDraft.user_id || undefined,
           can_ingest: userDraft.can_ingest,
@@ -1297,7 +1295,6 @@ function TelegramSettings() {
       setUserDraft({
         username: "",
         phone_number: "",
-        telegram_user_id: "",
         display_name: "",
         user_id: "",
         can_ingest: true,
@@ -1411,10 +1408,6 @@ function TelegramSettings() {
             <Input value={userDraft.phone_number} onChange={(event) => setUserDraft({ ...userDraft, phone_number: event.target.value })} />
           </div>
           <div className="space-y-2">
-            <Label>Telegram ID</Label>
-            <Input value={userDraft.telegram_user_id} onChange={(event) => setUserDraft({ ...userDraft, telegram_user_id: event.target.value })} />
-          </div>
-          <div className="space-y-2">
             <Label>RAG account</Label>
             <Select value={userDraft.user_id} onChange={(event) => setUserDraft({ ...userDraft, user_id: event.target.value })}>
               <option value="">Not linked</option>
@@ -1438,7 +1431,7 @@ function TelegramSettings() {
             Can ask
           </label>
         </div>
-        <Button className="mt-4" onClick={addAllowedUser}>
+        <Button className="mt-4" disabled={!userDraft.username && !userDraft.phone_number} onClick={addAllowedUser}>
           <UserPlus className="h-4 w-4" aria-hidden />
           Add user
         </Button>
@@ -1446,7 +1439,7 @@ function TelegramSettings() {
           {(allowedUsers.data ?? []).map((user) => (
             <div key={user.id} className="flex items-center justify-between gap-3 py-3">
               <div>
-                <p className="font-medium text-zinc-950">{user.display_name || user.username || user.phone_number || user.telegram_user_id}</p>
+                <p className="font-medium text-zinc-950">{user.display_name || user.username || user.phone_number || "Telegram user"}</p>
                 <p className="text-sm text-zinc-500">
                   {user.username ? `@${user.username}` : ""} {user.phone_number ?? ""} {user.user_id ? `linked ${user.user_id}` : ""}
                 </p>

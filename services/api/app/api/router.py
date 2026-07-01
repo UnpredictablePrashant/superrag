@@ -16,8 +16,10 @@ from app.api.routes import (
     profiles,
     providers,
     retrieval,
+    team_chat,
     telegram,
     uploads,
+    usage,
     workspace,
 )
 
@@ -33,8 +35,10 @@ api_router.include_router(profiles.router)
 api_router.include_router(connectors.router)
 api_router.include_router(company_profiles.router)
 api_router.include_router(chat.router)
+api_router.include_router(team_chat.router)
 api_router.include_router(retrieval.router)
 api_router.include_router(telegram.router)
 api_router.include_router(notifications.router)
 api_router.include_router(audit_logs.router)
+api_router.include_router(usage.router)
 api_router.include_router(workspace.router)

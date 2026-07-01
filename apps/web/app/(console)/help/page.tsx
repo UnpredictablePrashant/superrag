@@ -1,7 +1,13 @@
+"use client";
+
+import { getMe } from "@/lib/api";
 import { Badge, Panel } from "@rag-console/ui";
+import { useQuery } from "@tanstack/react-query";
 import { Bot, CheckCircle2, KeyRound, Plug, ShieldCheck, TerminalSquare } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import * as React from "react";
 import type { ReactNode } from "react";
 
 const mcpConfig = `{
@@ -39,6 +45,18 @@ const mcpApiPayload = `{
 }`;
 
 export default function DocsPage() {
+  const router = useRouter();
+  const me = useQuery({ queryKey: ["me"], queryFn: getMe });
+  const canViewDocs = me.data?.role === "Owner" || me.data?.role === "Admin";
+
+  React.useEffect(() => {
+    if (me.data && !canViewDocs) router.replace("/ask");
+  }, [canViewDocs, me.data, router]);
+
+  if (me.isLoading || !canViewDocs) {
+    return <div className="text-sm text-zinc-500">Loading docs</div>;
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -90,7 +108,7 @@ export default function DocsPage() {
                   </li>
                   <li>Open Settings, Telegram, paste the bot token, choose the default knowledge base and model.</li>
                   <li>Save, test the bot, then register the webhook.</li>
-                  <li>Add allowed Telegram users by username, phone number, or Telegram user ID.</li>
+                  <li>Add allowed Telegram users by username or phone number.</li>
                 </ol>
               </DocBlock>
               <DocBlock title="Webhook" icon={KeyRound}>

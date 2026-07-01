@@ -151,9 +151,24 @@ def create_category(
     parent = None
     if payload.parent_id:
         parent = db.get(Category, payload.parent_id)
-        if not parent or parent.organization_id != ctx.organization_id:
+        if (
+            not parent
+            or parent.organization_id != ctx.organization_id
+            or parent.knowledge_base_id != knowledge_base_id
+            or parent.deleted_at is not None
+        ):
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Parent category not found.")
     path = f"{parent.path}/{payload.name}" if parent else payload.name
+    existing = db.scalar(
+        select(Category).where(
+            Category.organization_id == ctx.organization_id,
+            Category.knowledge_base_id == knowledge_base_id,
+            Category.path == path,
+            Category.deleted_at.is_(None),
+        )
+    )
+    if existing:
+        return existing
     category = Category(
         organization_id=ctx.organization_id,
         knowledge_base_id=knowledge_base_id,

@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -25,6 +26,8 @@ from app.models.entities import (
     Organization,
     OrganizationInvitation,
     OrganizationMember,
+    TelegramAllowedUser,
+    TelegramIntegration,
     User,
 )
 from app.models.entities import (
@@ -233,22 +236,12 @@ def accept_invitation(
 @router.get("/members", response_model=list[MemberOut])
 def list_members(ctx: AuthContext = Depends(require_organization), db: Session = Depends(get_db)) -> list[MemberOut]:
     rows = db.execute(
-        select(OrganizationMember, User.email)
+        select(OrganizationMember, User)
         .join(User, User.id == OrganizationMember.user_id)
         .where(OrganizationMember.organization_id == ctx.organization_id)
         .order_by(OrganizationMember.created_at)
     ).all()
-    return [
-        MemberOut(
-            id=member.id,
-            user_id=member.user_id,
-            email=email,
-            role=member.role,
-            status=member.status,
-            created_at=member.created_at,
-        )
-        for member, email in rows
-    ]
+    return [_member_out(member, user) for member, user in rows]
 
 
 @router.patch("/members/{member_id}", response_model=MemberOut)
@@ -261,22 +254,142 @@ def patch_member(
     member = db.get(OrganizationMember, member_id)
     if not member or member.organization_id != ctx.organization_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Member not found.")
-    if payload.role and not can_manage_role(ctx.role or "", member.role.value):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="You cannot change this member's role.")
+    if not can_manage_role(ctx.role or "", member.role.value):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="You cannot change this member.")
+    user = db.scalar(select(User).where(User.id == member.user_id))
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Member user not found.")
+
+    fields = payload.model_dump(exclude_unset=True)
+    if "email" in fields and payload.email is not None:
+        next_email = str(payload.email).lower()
+        existing_user = db.scalar(select(User).where(User.email == next_email, User.id != user.id))
+        if existing_user:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="That email address is already in use.")
+        user.email = next_email
+    if "full_name" in fields:
+        user.full_name = _clean_optional_text(payload.full_name)
+    if "phone_number" in fields:
+        user.phone_number = _normalize_phone(payload.phone_number)
+    if "telegram_username" in fields:
+        user.telegram_username = _normalize_telegram_username(payload.telegram_username)
     if payload.role:
         member.role = payload.role
     if payload.status:
         member.status = payload.status
-    db.commit()
-    email = db.scalar(select(User.email).where(User.id == member.user_id))
+    if "full_name" in fields or "phone_number" in fields or "telegram_username" in fields:
+        _sync_member_telegram_allowed_user(db, ctx.organization_id, user)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Member details conflict with an existing user.") from exc
+    db.refresh(member)
+    db.refresh(user)
+    return _member_out(member, user)
+
+
+def _member_out(member: OrganizationMember, user: User | None) -> MemberOut:
     return MemberOut(
         id=member.id,
         user_id=member.user_id,
-        email=email,
+        email=user.email if user else None,
+        full_name=user.full_name if user else None,
+        phone_number=user.phone_number if user else None,
+        telegram_username=user.telegram_username if user else None,
         role=member.role,
         status=member.status,
+        chat_status=member.chat_status,
+        status_message=member.status_message,
+        status_updated_at=member.status_updated_at,
         created_at=member.created_at,
     )
+
+
+def _sync_member_telegram_allowed_user(db: Session, organization_id, user: User) -> None:
+    username = _normalize_telegram_username(user.telegram_username)
+    phone_number = _normalize_phone(user.phone_number)
+    integration = db.scalar(
+        select(TelegramIntegration).where(
+            TelegramIntegration.organization_id == organization_id,
+            TelegramIntegration.deleted_at.is_(None),
+        )
+    )
+    if not integration:
+        if not (username or phone_number):
+            return
+        integration = TelegramIntegration(
+            organization_id=organization_id,
+            webhook_secret_token=secrets.token_urlsafe(32),
+            is_enabled=False,
+        )
+        db.add(integration)
+        db.flush()
+
+    allowed = db.scalar(
+        select(TelegramAllowedUser).where(
+            TelegramAllowedUser.integration_id == integration.id,
+            TelegramAllowedUser.user_id == user.id,
+            TelegramAllowedUser.deleted_at.is_(None),
+        )
+    )
+    _ensure_telegram_identifier_available(db, integration.id, username, phone_number, allowed)
+    if not allowed:
+        if not (username or phone_number):
+            return
+        db.add(
+            TelegramAllowedUser(
+                organization_id=organization_id,
+                integration_id=integration.id,
+                user_id=user.id,
+                username=username,
+                phone_number=phone_number,
+                display_name=user.full_name or user.email,
+                can_ingest=True,
+                can_query=True,
+            )
+        )
+        return
+
+    allowed.username = username
+    allowed.phone_number = phone_number
+    allowed.display_name = user.full_name or user.email
+    allowed.is_enabled = bool(allowed.telegram_user_id or username or phone_number)
+
+
+def _ensure_telegram_identifier_available(
+    db: Session,
+    integration_id,
+    username: str | None,
+    phone_number: str | None,
+    current_allowed: TelegramAllowedUser | None,
+) -> None:
+    if username:
+        existing = db.scalar(
+            select(TelegramAllowedUser).where(
+                TelegramAllowedUser.integration_id == integration_id,
+                TelegramAllowedUser.username == username,
+                TelegramAllowedUser.deleted_at.is_(None),
+            )
+        )
+        if existing and (not current_allowed or existing.id != current_allowed.id):
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="That Telegram username is already allowed for another user.")
+    if phone_number:
+        existing = db.scalar(
+            select(TelegramAllowedUser).where(
+                TelegramAllowedUser.integration_id == integration_id,
+                TelegramAllowedUser.phone_number == phone_number,
+                TelegramAllowedUser.deleted_at.is_(None),
+            )
+        )
+        if existing and (not current_allowed or existing.id != current_allowed.id):
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="That phone number is already allowed for another user.")
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.strip() or None
 
 
 def _create_organization(db: Session, name: str) -> Organization:

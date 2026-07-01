@@ -7,10 +7,12 @@ This product can use external MCP servers as connectors, and it can also expose 
 The API mounts a Streamable HTTP MCP endpoint at:
 
 ```text
-http://localhost:8000/mcp
+{API_BASE_URL}/mcp
 ```
 
-In production, replace `localhost:8000` with the public API origin. The MCP server authenticates each user with the same RAG Console session token used by the web app. For HTTP clients, send it as a bearer token:
+In production, `API_BASE_URL` must be the public HTTPS API origin for the hosted application. Normal users should open `Help -> Your RAG MCP Server`, click `Generate Cursor config` or `Generate Claude config`, and copy the generated JSON. The app creates a token for that user's account and fills in the deployed MCP URL automatically.
+
+The MCP server authenticates each user with a RAG Console session token. For HTTP clients, send it as a bearer token:
 
 ```http
 Authorization: Bearer <rag_console_session_token>
@@ -35,14 +37,14 @@ All tools are scoped to the authenticated user's organization and role. Search a
 
 ### Cursor HTTP Config
 
-Use this when Cursor can reach your hosted API directly:
+Use this shape when Cursor can reach your hosted API directly. In the app, this is generated for the user with the real hosted URL and token:
 
 ```json
 {
   "mcpServers": {
     "rag-console": {
       "type": "http",
-      "url": "http://localhost:8000/mcp",
+      "url": "https://api.your-domain.com/mcp",
       "headers": {
         "Authorization": "Bearer <rag_console_session_token>"
       }

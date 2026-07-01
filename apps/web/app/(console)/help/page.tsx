@@ -1,12 +1,11 @@
 "use client";
 
-import { getMe } from "@/lib/api";
-import { Badge, Panel } from "@rag-console/ui";
+import { createMcpSetup, getMe, McpSetup } from "@/lib/api";
+import { Badge, Button, Panel } from "@rag-console/ui";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, CheckCircle2, KeyRound, Plug, ShieldCheck, TerminalSquare } from "lucide-react";
+import { Bot, Check, CheckCircle2, Copy, KeyRound, Plug, RefreshCw, ShieldCheck, TerminalSquare } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import * as React from "react";
 import type { ReactNode } from "react";
 
@@ -45,15 +44,9 @@ const mcpApiPayload = `{
 }`;
 
 export default function DocsPage() {
-  const router = useRouter();
   const me = useQuery({ queryKey: ["me"], queryFn: getMe });
-  const canViewDocs = me.data?.role === "Owner" || me.data?.role === "Admin";
 
-  React.useEffect(() => {
-    if (me.data && !canViewDocs) router.replace("/ask");
-  }, [canViewDocs, me.data, router]);
-
-  if (me.isLoading || !canViewDocs) {
+  if (me.isLoading) {
     return <div className="text-sm text-zinc-500">Loading docs</div>;
   }
 
@@ -73,7 +66,11 @@ export default function DocsPage() {
             </a>
             <a href="#mcp" className="flex items-center gap-2 rounded-md px-3 py-2 font-medium text-zinc-700 hover:bg-zinc-100">
               <Plug className="h-4 w-4 text-emerald-700" aria-hidden />
-              MCP connectors
+              Your RAG MCP
+            </a>
+            <a href="#mcp-connectors" className="flex items-center gap-2 rounded-md px-3 py-2 font-medium text-zinc-700 hover:bg-zinc-100">
+              <TerminalSquare className="h-4 w-4 text-zinc-700" aria-hidden />
+              External MCP
             </a>
           </nav>
         </Panel>
@@ -129,7 +126,20 @@ export default function DocsPage() {
           <Panel id="mcp" className="scroll-mt-24 p-5">
             <div className="flex flex-wrap items-center gap-2">
               <Plug className="h-5 w-5 text-emerald-700" aria-hidden />
-              <h3 className="font-semibold text-zinc-950">MCP Connectors</h3>
+              <h3 className="font-semibold text-zinc-950">Your RAG MCP Server</h3>
+              <Badge tone="green">Personal token</Badge>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-zinc-600">
+              Generate a copy-ready MCP config for Cursor, Claude, or another MCP client. The URL is based on the
+              deployed API base URL, and the token uses your account permissions.
+            </p>
+            <McpSetupGenerator />
+          </Panel>
+
+          <Panel id="mcp-connectors" className="scroll-mt-24 p-5">
+            <div className="flex flex-wrap items-center gap-2">
+              <TerminalSquare className="h-5 w-5 text-zinc-700" aria-hidden />
+              <h3 className="font-semibold text-zinc-950">External MCP Connectors</h3>
               <Badge tone="green">Cursor-style JSON</Badge>
             </div>
             <p className="mt-3 text-sm leading-6 text-zinc-600">
@@ -172,6 +182,62 @@ export default function DocsPage() {
   );
 }
 
+function McpSetupGenerator() {
+  const [setup, setSetup] = React.useState<McpSetup | null>(null);
+  const [error, setError] = React.useState("");
+  const [isGenerating, setIsGenerating] = React.useState(false);
+
+  async function generate(client: "cursor" | "claude" | "generic") {
+    setError("");
+    setIsGenerating(true);
+    try {
+      setSetup(await createMcpSetup(client));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not generate MCP setup.");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  const configText = setup ? JSON.stringify(setup.cursor_config, null, 2) : "";
+
+  return (
+    <div className="mt-5 space-y-4">
+      <div className="flex flex-wrap gap-2">
+        <Button disabled={isGenerating} onClick={() => generate("cursor")}>
+          <RefreshCw className="h-4 w-4" aria-hidden />
+          Generate Cursor config
+        </Button>
+        <Button variant="secondary" disabled={isGenerating} onClick={() => generate("claude")}>
+          <RefreshCw className="h-4 w-4" aria-hidden />
+          Generate Claude config
+        </Button>
+      </div>
+      {error ? <div className="rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
+      {setup ? (
+        <div className="space-y-3">
+          <div className="rounded-md bg-zinc-50 p-3 text-sm text-zinc-600">
+            <p className="font-medium text-zinc-950">MCP URL</p>
+            <p className="break-all">{setup.mcp_url}</p>
+            <p className="mt-2 text-xs">Token expires: {new Date(setup.expires_at).toLocaleString()}</p>
+          </div>
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="font-medium text-zinc-950">Copy this MCP JSON</p>
+              <CopyButton value={configText} />
+            </div>
+            <CodeBlock value={configText} />
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">
+          Generate a config to reveal your personal MCP token and hosted server URL.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DocGrid({ items }: { items: string[] }) {
   return (
     <div className="mt-5 grid gap-3 md:grid-cols-2">
@@ -201,6 +267,21 @@ function DocBlock({
       </div>
       {children}
     </div>
+  );
+}
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = React.useState(false);
+  async function copy() {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+  return (
+    <Button variant="secondary" disabled={!value} onClick={copy}>
+      {copied ? <Check className="h-4 w-4" aria-hidden /> : <Copy className="h-4 w-4" aria-hidden />}
+      {copied ? "Copied" : "Copy"}
+    </Button>
   );
 }
 

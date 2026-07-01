@@ -44,6 +44,7 @@ export function AskWorkspace({ compact = false }: { compact?: boolean }) {
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
   const streamRef = React.useRef<EventSource | null>(null);
+  const messagesEndRef = React.useRef<HTMLDivElement | null>(null);
 
   const summary = useQuery({ queryKey: ["workspace-summary"], queryFn: getWorkspaceSummary, refetchInterval: 10000 });
   const kbs = useQuery({ queryKey: ["knowledge-bases"], queryFn: listKnowledgeBases });
@@ -237,15 +238,18 @@ export function AskWorkspace({ compact = false }: { compact?: boolean }) {
     if (webSearchDisabled && useWebSearch) setUseWebSearch(false);
     if (mcpToolsDisabled && useMcpTools) setUseMcpTools(false);
   }, [mcpToolsDisabled, useMcpTools, useWebSearch, webSearchDisabled]);
+  React.useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [messages.length, streamingText]);
 
   return (
     <div
       className={cn(
-        "grid min-h-[680px] gap-4 xl:grid-cols-[280px_1fr_360px]",
-        compact ? "h-[calc(100vh-176px)]" : "h-[calc(100vh-112px)]",
+        "flex min-h-0 flex-col gap-0 lg:grid lg:gap-4 xl:grid-cols-[280px_1fr_360px]",
+        compact ? "h-full lg:h-[calc(100vh-176px)]" : "min-h-[calc(100dvh-9rem)] lg:h-[calc(100vh-112px)] lg:min-h-[680px]",
       )}
     >
-      <Panel className="flex min-h-0 flex-col overflow-hidden">
+      <Panel className={cn("min-h-0 flex-col overflow-hidden", compact ? "hidden xl:flex" : "flex max-h-72 xl:max-h-none")}>
         <div className="border-b border-zinc-200 p-4">
           <Button className="w-full" onClick={() => createSession.mutate()}>
             <MessageSquarePlus className="h-4 w-4" aria-hidden />
@@ -290,14 +294,21 @@ export function AskWorkspace({ compact = false }: { compact?: boolean }) {
         </div>
       </Panel>
 
-      <Panel className="flex min-h-0 flex-col overflow-hidden">
-        <div className="border-b border-zinc-200 px-5 py-4">
+      <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-0 shadow-none lg:rounded-lg lg:border lg:shadow-sm">
+        <div className="flex-none border-b border-zinc-200 px-3 py-3 sm:px-5 sm:py-4">
           <div className="flex flex-col justify-between gap-3 xl:flex-row xl:items-start">
-            <div>
+            <div className="min-w-0">
               <h2 className="text-lg font-semibold text-zinc-950">Ask company knowledge</h2>
               <p className="text-xs text-zinc-500">Sources: {selectedKbName || "None selected"}</p>
             </div>
-            <Badge tone="blue">{selectedModel ? `${selectedModel.provider} / ${selectedModel.model_name}` : "Local fallback"}</Badge>
+            <div className="flex items-center gap-2">
+              <Badge className="max-w-full truncate" tone="blue">
+                {selectedModel ? `${selectedModel.provider} / ${selectedModel.model_name}` : "Local fallback"}
+              </Badge>
+              <Button aria-label="New chat" className="xl:hidden" size="icon" variant="secondary" onClick={() => createSession.mutate()}>
+                <MessageSquarePlus className="h-4 w-4" aria-hidden />
+              </Button>
+            </div>
           </div>
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
             <LiveOption
@@ -318,7 +329,7 @@ export function AskWorkspace({ compact = false }: { compact?: boolean }) {
             />
           </div>
         </div>
-        <div className="min-h-0 flex-1 space-y-4 overflow-auto bg-zinc-50 p-5">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain bg-zinc-50 px-3 py-4 sm:space-y-4 sm:p-5">
           <ErrorBox message={error} />
           {notice ? <div className="rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div> : null}
           {!messages.length && !streamingText ? (
@@ -336,13 +347,15 @@ export function AskWorkspace({ compact = false }: { compact?: boolean }) {
             <MessageBubble key={message.id} message={message} onCitation={setSelectedCitation} />
           ))}
           {streamingText ? (
-            <div className="rounded-md bg-white p-4 shadow-sm">
+            <div className="max-w-[86%] rounded-2xl rounded-bl-md bg-white p-3 shadow-sm sm:max-w-3xl sm:p-4">
               <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-900">{streamingText}</p>
             </div>
           ) : null}
+          <div ref={messagesEndRef} />
         </div>
-        <div className="border-t border-zinc-200 p-4">
+        <div className="flex-none border-t border-zinc-200 bg-white p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:p-4">
           <Textarea
+            className="max-h-36 min-h-20 resize-none rounded-2xl"
             placeholder="Ask about policy, projects, customers, systems, or live tools"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
@@ -350,28 +363,28 @@ export function AskWorkspace({ compact = false }: { compact?: boolean }) {
               if ((event.metaKey || event.ctrlKey) && event.key === "Enter") sendMessage();
             }}
           />
-          <div className="mt-3 flex items-center justify-between gap-3">
-            <span className="text-xs text-zinc-500">{toolStatusLabel(useWebSearch, useMcpTools)}</span>
-            <div className="flex gap-2">
-              <Select className="h-10 w-32" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as "chat" | "docx" | "pdf")}>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 sm:mt-3 sm:gap-3">
+            <span className="min-w-0 flex-1 truncate text-xs text-zinc-500">{toolStatusLabel(useWebSearch, useMcpTools)}</span>
+            <div className="flex flex-none gap-1 sm:gap-2">
+              <Select className="h-10 w-24 sm:w-32" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as "chat" | "docx" | "pdf")}>
                 <option value="chat">Chat</option>
                 <option value="pdf">PDF</option>
                 <option value="docx">DOCX</option>
               </Select>
               <Button variant="secondary" onClick={stopStream}>
                 <Square className="h-4 w-4" aria-hidden />
-                Stop
+                <span className="hidden sm:inline">Stop</span>
               </Button>
               <Button disabled={!prompt.trim()} onClick={sendMessage}>
                 <Send className="h-4 w-4" aria-hidden />
-                Send
+                <span className="hidden sm:inline">Send</span>
               </Button>
             </div>
           </div>
         </div>
       </Panel>
 
-      <Panel className="flex min-h-0 flex-col overflow-hidden">
+      <Panel className={cn("min-h-0 flex-col overflow-hidden", compact ? "hidden xl:flex" : "flex xl:flex")}>
         <div className="border-b border-zinc-200 p-4">
           <h3 className="font-semibold text-zinc-950">Answer controls</h3>
           <p className="mt-1 text-xs text-zinc-500">Narrow the answer surface before retrieval runs.</p>
@@ -520,8 +533,12 @@ function MessageBubble({ message, onCitation }: { message: ChatMessage; onCitati
   const exportUrl = typeof message.metadata?.export_url === "string" ? message.metadata.export_url : "";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-3xl rounded-md p-4 shadow-sm ${isUser ? "bg-emerald-700 text-white" : "bg-white text-zinc-900"}`}>
-        <p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
+      <div
+        className={`max-w-[86%] rounded-2xl p-3 shadow-sm sm:max-w-3xl sm:p-4 ${
+          isUser ? "rounded-br-md bg-[#f8d8ca] text-[#083d59]" : "rounded-bl-md bg-white text-zinc-900"
+        }`}
+      >
+        <p className="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]">{message.content}</p>
         {!isUser && exportUrl ? (
           <a
             className="mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50"

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import mimetypes
 from datetime import datetime
-from uuid import UUID
+from io import BytesIO
+from pathlib import PurePosixPath
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import AuthContext, capability
+from app.core.config import settings
 from app.core.security import utcnow
 from app.db.session import get_db
 from app.models.entities import (
@@ -28,8 +33,12 @@ from app.schemas.api import (
     TeamChatParticipantOut,
     TeamChatParticipantsAddIn,
 )
+from app.services.storage import get_object_bytes, put_object_bytes
 
 router = APIRouter(prefix="/team-chat", tags=["team-chat"])
+
+DEFAULT_PUBLIC_CHANNEL_NAME = "general"
+MAX_CHAT_ATTACHMENTS = 10
 
 
 @router.patch("/presence", response_model=TeamChatParticipantOut)
@@ -68,6 +77,7 @@ def list_conversations(
     ctx: AuthContext = Depends(capability("chat")),
     db: Session = Depends(get_db),
 ) -> list[TeamChatConversationOut]:
+    _ensure_default_public_channel(db, ctx.organization_id, ctx.user.id)
     rows = db.execute(
         select(TeamChatConversation)
         .join(TeamChatParticipant, TeamChatParticipant.conversation_id == TeamChatConversation.id)
@@ -216,22 +226,101 @@ def create_message(
 ) -> TeamChatMessageOut:
     conversation = _get_conversation_for_user(db, ctx, conversation_id)
     content = payload.content.strip()
-    if not content:
+    if not content or payload.message_type != "text":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Message content is required.")
     message = TeamChatMessage(
         organization_id=ctx.organization_id,
         conversation_id=conversation.id,
         user_id=ctx.user.id,
         content=content,
+        message_type="text",
+        attachments=[],
     )
-    conversation.last_message_at = utcnow()
-    participant = _get_participant(db, conversation.id, ctx.user.id)
-    if participant:
-        participant.last_read_at = utcnow()
-    db.add(message)
-    db.commit()
-    db.refresh(message)
+    _commit_created_message(db, conversation, message, ctx.user.id)
     return _message_out(message, ctx.user)
+
+
+@router.post("/conversations/{conversation_id}/messages/upload", response_model=TeamChatMessageOut)
+def create_upload_message(
+    conversation_id: UUID,
+    content: str = Form(default=""),
+    message_type: str = Form(default="attachment"),
+    files: list[UploadFile] = File(...),
+    ctx: AuthContext = Depends(capability("chat")),
+    db: Session = Depends(get_db),
+) -> TeamChatMessageOut:
+    conversation = _get_conversation_for_user(db, ctx, conversation_id)
+    if message_type not in {"attachment", "voice"}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported upload message type.")
+    if not files:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Attach at least one file.")
+    if len(files) > MAX_CHAT_ATTACHMENTS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Attach up to {MAX_CHAT_ATTACHMENTS} files.")
+    if message_type == "voice" and len(files) != 1:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Voice messages must contain one audio file.")
+
+    attachments = []
+    for file in files:
+        filename = _safe_attachment_filename(file.filename or "attachment")
+        content_type = file.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        if message_type == "voice" and not content_type.startswith("audio/"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Voice messages must be audio uploads.")
+        data = _read_upload_bytes(file)
+        if not data:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Attachment cannot be empty.")
+        attachment_id = str(uuid4())
+        object_key = _attachment_object_key(ctx.organization_id, conversation.id, attachment_id, filename)
+        put_object_bytes(object_key, data, content_type)
+        attachments.append(
+            {
+                "id": attachment_id,
+                "filename": filename,
+                "content_type": content_type,
+                "size_bytes": len(data),
+                "kind": "voice" if message_type == "voice" else "attachment",
+                "object_key": object_key,
+            }
+        )
+
+    message = TeamChatMessage(
+        organization_id=ctx.organization_id,
+        conversation_id=conversation.id,
+        user_id=ctx.user.id,
+        content=content.strip(),
+        message_type=message_type,
+        attachments=attachments,
+    )
+    _commit_created_message(db, conversation, message, ctx.user.id)
+    return _message_out(message, ctx.user)
+
+
+@router.get("/conversations/{conversation_id}/messages/{message_id}/attachments/{attachment_id}")
+def download_attachment(
+    conversation_id: UUID,
+    message_id: UUID,
+    attachment_id: str,
+    ctx: AuthContext = Depends(capability("chat")),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    _get_conversation_for_user(db, ctx, conversation_id)
+    message = _get_message(db, ctx, conversation_id, message_id)
+    if message.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Attachment not found.")
+    attachment = next(
+        (item for item in message.attachments if str(item.get("id")) == attachment_id),
+        None,
+    )
+    if not attachment or not attachment.get("object_key"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Attachment not found.")
+    data = get_object_bytes(str(attachment["object_key"]))
+    filename = _safe_attachment_filename(str(attachment.get("filename") or "attachment"))
+    content_type = str(attachment.get("content_type") or "application/octet-stream")
+    disposition = "inline" if content_type.startswith("audio/") else "attachment"
+    return StreamingResponse(
+        BytesIO(data),
+        media_type=content_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
 
 
 @router.patch("/conversations/{conversation_id}/messages/{message_id}", response_model=TeamChatMessageOut)
@@ -315,6 +404,21 @@ def _get_message(db: Session, ctx: AuthContext, conversation_id: UUID, message_i
     return message
 
 
+def _commit_created_message(
+    db: Session,
+    conversation: TeamChatConversation,
+    message: TeamChatMessage,
+    user_id: UUID,
+) -> None:
+    conversation.last_message_at = utcnow()
+    participant = _get_participant(db, conversation.id, user_id)
+    if participant:
+        participant.last_read_at = utcnow()
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+
+
 def _active_member_user_ids(db: Session, organization_id: UUID, user_ids: set[UUID]) -> list[UUID]:
     if not user_ids:
         return []
@@ -355,6 +459,8 @@ def _conversation_out(db: Session, conversation: TeamChatConversation, current_u
         name=conversation.name,
         description=conversation.description,
         created_by_user_id=conversation.created_by_user_id,
+        is_public=conversation.is_public,
+        is_default=conversation.is_default,
         is_archived=conversation.is_archived,
         last_message_at=conversation.last_message_at,
         created_at=conversation.created_at,
@@ -407,6 +513,7 @@ def _latest_message_out(db: Session, conversation_id: UUID) -> TeamChatMessageOu
 
 
 def _message_out(message: TeamChatMessage, user: User) -> TeamChatMessageOut:
+    attachments = [] if message.deleted_at else [_attachment_out(message, item) for item in message.attachments]
     return TeamChatMessageOut(
         id=message.id,
         conversation_id=message.conversation_id,
@@ -414,6 +521,8 @@ def _message_out(message: TeamChatMessage, user: User) -> TeamChatMessageOut:
         email=user.email,
         full_name=user.full_name,
         content="This message was deleted." if message.deleted_at else message.content,
+        message_type="text" if message.deleted_at else message.message_type,  # type: ignore[arg-type]
+        attachments=attachments,
         edited_at=message.edited_at,
         deleted_at=message.deleted_at,
         created_at=message.created_at,
@@ -421,5 +530,99 @@ def _message_out(message: TeamChatMessage, user: User) -> TeamChatMessageOut:
     )
 
 
+def _attachment_out(message: TeamChatMessage, attachment: dict) -> dict:
+    attachment_id = str(attachment.get("id") or "")
+    return {
+        "id": attachment_id,
+        "filename": str(attachment.get("filename") or "attachment"),
+        "content_type": attachment.get("content_type"),
+        "size_bytes": int(attachment.get("size_bytes") or 0),
+        "kind": attachment.get("kind") or "attachment",
+        "download_url": (
+            f"/team-chat/conversations/{message.conversation_id}/messages/{message.id}/attachments/{attachment_id}"
+        ),
+    }
+
+
+def _ensure_default_public_channel(db: Session, organization_id: UUID, current_user_id: UUID) -> TeamChatConversation | None:
+    active_user_ids = list(
+        db.scalars(
+            select(OrganizationMember.user_id).where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.status == "active",
+            )
+        )
+    )
+    if not active_user_ids:
+        return None
+    conversation = db.scalar(
+        select(TeamChatConversation).where(
+            TeamChatConversation.organization_id == organization_id,
+            TeamChatConversation.is_default.is_(True),
+            TeamChatConversation.is_archived.is_(False),
+        )
+    )
+    changed = False
+    if not conversation:
+        conversation = TeamChatConversation(
+            organization_id=organization_id,
+            kind="channel",
+            name=DEFAULT_PUBLIC_CHANNEL_NAME,
+            description="Company-wide public channel for everyone in the organization.",
+            created_by_user_id=current_user_id if current_user_id in active_user_ids else active_user_ids[0],
+            is_public=True,
+            is_default=True,
+            last_message_at=utcnow(),
+        )
+        db.add(conversation)
+        db.flush()
+        changed = True
+    elif not conversation.is_public:
+        conversation.is_public = True
+        changed = True
+
+    existing_user_ids = set(
+        db.scalars(select(TeamChatParticipant.user_id).where(TeamChatParticipant.conversation_id == conversation.id))
+    )
+    for user_id in active_user_ids:
+        if user_id not in existing_user_ids:
+            db.add(
+                TeamChatParticipant(
+                    organization_id=organization_id,
+                    conversation_id=conversation.id,
+                    user_id=user_id,
+                    role="owner" if user_id == conversation.created_by_user_id else "member",
+                )
+            )
+            changed = True
+    if changed:
+        db.commit()
+        db.refresh(conversation)
+    return conversation
+
+
 def _direct_conversation_key(user_ids: list[UUID]) -> str:
     return ":".join(sorted(str(user_id) for user_id in user_ids))
+
+
+def _safe_attachment_filename(filename: str) -> str:
+    return PurePosixPath(filename).name.replace("\\", "_").replace("/", "_").replace('"', "_") or "attachment"
+
+
+def _attachment_object_key(organization_id: UUID, conversation_id: UUID, attachment_id: str, filename: str) -> str:
+    return (
+        f"organizations/{organization_id}/team-chat/conversations/{conversation_id}/"
+        f"attachments/{attachment_id}/{filename}"
+    )
+
+
+def _read_upload_bytes(file: UploadFile) -> bytes:
+    data = bytearray()
+    while True:
+        chunk = file.file.read(1024 * 1024)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > settings.max_upload_bytes:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Upload is too large.")
+    return bytes(data)

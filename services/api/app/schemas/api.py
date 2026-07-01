@@ -610,8 +610,18 @@ class TeamChatParticipantOut(APIModel):
     last_read_at: datetime | None = None
 
 
+class TeamChatAttachmentOut(APIModel):
+    id: str
+    filename: str
+    content_type: str | None = None
+    size_bytes: int
+    kind: Literal["attachment", "voice"] = "attachment"
+    download_url: str
+
+
 class TeamChatMessageCreateIn(BaseModel):
-    content: str = Field(min_length=1, max_length=8000)
+    content: str = Field(default="", max_length=8000)
+    message_type: Literal["text", "attachment", "voice"] = "text"
 
 
 class TeamChatMessagePatchIn(BaseModel):
@@ -625,6 +635,8 @@ class TeamChatMessageOut(APIModel):
     email: EmailStr
     full_name: str | None = None
     content: str
+    message_type: Literal["text", "attachment", "voice"] = "text"
+    attachments: list[TeamChatAttachmentOut] = []
     edited_at: datetime | None
     deleted_at: datetime | None
     created_at: datetime
@@ -651,6 +663,8 @@ class TeamChatConversationOut(APIModel):
     name: str | None
     description: str | None
     created_by_user_id: UUID
+    is_public: bool = False
+    is_default: bool = False
     is_archived: bool
     last_message_at: datetime | None
     created_at: datetime

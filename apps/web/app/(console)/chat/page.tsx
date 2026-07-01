@@ -7,12 +7,14 @@ import {
   createTeamChatChannel,
   createTeamChatDirect,
   createTeamChatMessage,
+  createTeamChatUploadMessage,
   deleteTeamChatMessage,
   getMe,
   listMembers,
   listTeamChatConversations,
   listTeamChatMessages,
   markTeamChatRead,
+  teamChatAttachmentUrl,
   updateTeamChatMessage,
   updateTeamChatPresence,
   type ChatPresenceStatus,
@@ -31,10 +33,13 @@ import {
   MessageCircle,
   MessageSquare,
   MessageSquarePlus,
+  Mic,
+  Paperclip,
   Pencil,
   Plus,
   Search,
   Send,
+  Square,
   Trash2,
   UserPlus,
   Users,
@@ -57,6 +62,8 @@ export default function TeamChatPage() {
   const [chatMode, setChatMode] = React.useState<"people" | "ai">("people");
   const [activeConversationId, setActiveConversationId] = React.useState("");
   const [messageText, setMessageText] = React.useState("");
+  const [selectedFiles, setSelectedFiles] = React.useState<File[]>([]);
+  const [isRecording, setIsRecording] = React.useState(false);
   const [channelName, setChannelName] = React.useState("");
   const [channelDescription, setChannelDescription] = React.useState("");
   const [selectedChannelMembers, setSelectedChannelMembers] = React.useState<string[]>([]);
@@ -74,6 +81,10 @@ export default function TeamChatPage() {
   const [selectedAddMembers, setSelectedAddMembers] = React.useState<string[]>([]);
   const [addMemberSearch, setAddMemberSearch] = React.useState("");
   const [error, setError] = React.useState("");
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const messagesEndRef = React.useRef<HTMLDivElement | null>(null);
+  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
+  const audioChunksRef = React.useRef<Blob[]>([]);
 
   const me = useQuery({ queryKey: ["me"], queryFn: getMe });
   const members = useQuery({ queryKey: ["members"], queryFn: listMembers });
@@ -109,6 +120,10 @@ export default function TeamChatPage() {
       .then(() => queryClient.invalidateQueries({ queryKey: ["team-chat-conversations"] }))
       .catch(() => undefined);
   }, [activeConversation?.unread_count, activeConversationId, queryClient]);
+
+  React.useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [activeConversationId, messages.data?.length]);
 
   const activeMembers = React.useMemo(
     () => (members.data ?? []).filter((member) => member.status === "active"),
@@ -181,19 +196,82 @@ export default function TeamChatPage() {
   });
 
   async function sendMessage() {
-    if (!activeConversationId || !messageText.trim()) return;
+    if (!activeConversationId || (!messageText.trim() && !selectedFiles.length)) return;
     setError("");
     const optimisticText = messageText;
+    const optimisticFiles = selectedFiles;
     setMessageText("");
+    setSelectedFiles([]);
     try {
-      await createTeamChatMessage(activeConversationId, optimisticText);
+      if (optimisticFiles.length) {
+        await createTeamChatUploadMessage(activeConversationId, {
+          content: optimisticText,
+          messageType: "attachment",
+          files: optimisticFiles,
+        });
+      } else {
+        await createTeamChatMessage(activeConversationId, optimisticText);
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["team-chat-messages", activeConversationId] }),
         queryClient.invalidateQueries({ queryKey: ["team-chat-conversations"] }),
       ]);
     } catch (err) {
       setMessageText(optimisticText);
+      setSelectedFiles(optimisticFiles);
       setError(err instanceof Error ? err.message : "Could not send message.");
+    }
+  }
+
+  async function toggleRecording() {
+    if (!activeConversationId) return;
+    if (isRecording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("Voice recording is not supported in this browser.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        setIsRecording(false);
+        void sendVoiceMessage();
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecording(true);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start voice recording.");
+    }
+  }
+
+  async function sendVoiceMessage() {
+    if (!activeConversationId || !audioChunksRef.current.length) return;
+    const blob = new Blob(audioChunksRef.current, { type: audioChunksRef.current[0]?.type || "audio/webm" });
+    audioChunksRef.current = [];
+    const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type || "audio/webm" });
+    try {
+      await createTeamChatUploadMessage(activeConversationId, {
+        content: messageText.trim(),
+        messageType: "voice",
+        files: [file],
+      });
+      setMessageText("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["team-chat-messages", activeConversationId] }),
+        queryClient.invalidateQueries({ queryKey: ["team-chat-conversations"] }),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send voice message.");
     }
   }
 
@@ -232,7 +310,8 @@ export default function TeamChatPage() {
     const search = conversationSearch.toLowerCase();
     const title = conversationDisplayName(conversation, currentUserId).toLowerCase();
     const latest = conversation.latest_message?.content.toLowerCase() ?? "";
-    return title.includes(search) || latest.includes(search);
+    const attachmentNames = conversation.latest_message?.attachments.map((item) => item.filename.toLowerCase()).join(" ") ?? "";
+    return title.includes(search) || latest.includes(search) || attachmentNames.includes(search);
   });
   const recentConversations = [...filteredConversations].sort((a, b) =>
     (b.last_message_at ?? b.updated_at).localeCompare(a.last_message_at ?? a.updated_at),
@@ -260,9 +339,9 @@ export default function TeamChatPage() {
   const currentPresence = presenceMeta(presenceStatus);
 
   return (
-    <div className="h-[calc(100vh-112px)] min-h-[640px] overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
+    <div className="h-[100dvh] min-h-0 overflow-hidden bg-white shadow-sm lg:h-[calc(100vh-112px)] lg:min-h-[640px] lg:rounded-lg lg:border lg:border-zinc-200">
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
+        <div className="flex flex-none flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-3 py-2 sm:gap-3 sm:px-4 sm:py-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <MessageSquare className="h-4 w-4 text-[#083d59]" aria-hidden />
@@ -281,12 +360,13 @@ export default function TeamChatPage() {
               <>
                 <div className="relative">
                   <Button
-                    className="h-9 px-3"
+                    aria-label={`Status: ${currentPresence.label}`}
+                    className="h-9 px-2 sm:px-3"
                     variant="secondary"
                     onClick={() => setStatusMenuOpen((open) => !open)}
                   >
                     <span className={cn("h-2.5 w-2.5 rounded-full", currentPresence.dot)} aria-hidden />
-                    {currentPresence.label}
+                    <span className="hidden sm:inline">{currentPresence.label}</span>
                     <ChevronDown className="h-4 w-4" aria-hidden />
                   </Button>
                   {statusMenuOpen ? (
@@ -322,23 +402,24 @@ export default function TeamChatPage() {
               </>
             ) : null}
             <Button
-              className="h-9 px-3"
+              aria-label={chatMode === "ai" ? "Switch to people chat" : "Switch to AI assistant"}
+              className="h-9 px-2 sm:px-3"
               variant={chatMode === "ai" ? "primary" : "secondary"}
               onClick={() => setChatMode(chatMode === "ai" ? "people" : "ai")}
             >
               {chatMode === "ai" ? <MessageSquare className="h-4 w-4" aria-hidden /> : <Bot className="h-4 w-4" aria-hidden />}
-              {chatMode === "ai" ? "People" : "AI assistant"}
+              <span className="hidden sm:inline">{chatMode === "ai" ? "People" : "AI assistant"}</span>
             </Button>
           </div>
         </div>
 
         {chatMode === "ai" ? (
-          <div className="min-h-0 flex-1 p-4">
+          <div className="min-h-0 flex-1 p-0 sm:p-4">
             <AskWorkspace compact />
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_280px]">
-            <Panel className="flex min-h-0 flex-col overflow-hidden rounded-none border-0 border-r border-zinc-200 shadow-none">
+          <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_280px]">
+            <Panel className="hidden min-h-0 flex-col overflow-hidden rounded-none border-0 border-r border-zinc-200 shadow-none lg:flex">
               <div className="border-b border-zinc-200 p-3">
                 <SearchInput
                   placeholder="Search chats"
@@ -374,8 +455,18 @@ export default function TeamChatPage() {
               </div>
             </Panel>
 
-            <Panel className="flex min-h-0 flex-col overflow-hidden rounded-none border-0 shadow-none">
-              <div className="border-b border-zinc-200 px-4 py-3">
+            <div className="flex-none border-b border-zinc-200 bg-white px-3 py-2 lg:hidden">
+              <SearchInput placeholder="Search chats" value={conversationSearch} onChange={setConversationSearch} />
+              <MobileConversationStrip
+                conversations={recentConversations}
+                currentUserId={currentUserId}
+                selectedId={activeConversationId}
+                onSelect={setActiveConversationId}
+              />
+            </div>
+
+            <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-0 shadow-none">
+              <div className="flex-none border-b border-zinc-200 px-3 py-2 sm:px-4 sm:py-3">
                 {activeConversation ? (
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -413,7 +504,7 @@ export default function TeamChatPage() {
                   </div>
                 )}
               </div>
-              <div className="min-h-0 flex-1 space-y-2 overflow-auto bg-zinc-50 px-4 py-3">
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain bg-zinc-50 px-2 py-3 sm:px-4">
                 <ErrorBox message={error} />
                 {!activeConversation ? (
                   <div className="flex h-full items-center justify-center text-center">
@@ -444,11 +535,12 @@ export default function TeamChatPage() {
                     onSave={saveEdit}
                   />
                 ))}
+                <div ref={messagesEndRef} />
               </div>
-              <div className="border-t border-zinc-200 p-3">
-                <div className="flex items-end gap-2">
+              <div className="flex-none border-t border-zinc-200 bg-white p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:p-3">
+                <div className="flex items-end gap-1 sm:gap-2">
                   <Textarea
-                    className="min-h-12 resize-none"
+                    className="max-h-36 min-h-11 resize-none rounded-2xl px-3 py-2"
                     disabled={!activeConversation}
                     placeholder={
                       activeConversation
@@ -462,17 +554,70 @@ export default function TeamChatPage() {
                       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") sendMessage();
                     }}
                   />
-                  <Button
-                    aria-label="Send message"
-                    className="h-10 w-10 flex-none px-0"
-                    disabled={!activeConversation || !messageText.trim()}
-                    onClick={sendMessage}
-                  >
-                    <Send className="h-4 w-4" aria-hidden />
-                  </Button>
+                  <div className="flex flex-none items-center gap-1">
+                    <input
+                      ref={fileInputRef}
+                      className="hidden"
+                      disabled={!activeConversation}
+                      multiple
+                      type="file"
+                      onChange={(event) => {
+                        setSelectedFiles(Array.from(event.target.files ?? []));
+                        event.target.value = "";
+                      }}
+                    />
+                    <Button
+                      aria-label="Attach files"
+                      disabled={!activeConversation}
+                      size="icon"
+                      title="Attach files"
+                      variant="secondary"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <Paperclip className="h-4 w-4" aria-hidden />
+                    </Button>
+                    <Button
+                      aria-label={isRecording ? "Stop recording" : "Record voice message"}
+                      className={cn(isRecording && "bg-rose-600 hover:bg-rose-700")}
+                      disabled={!activeConversation}
+                      size="icon"
+                      title={isRecording ? "Stop recording" : "Record voice message"}
+                      variant={isRecording ? "primary" : "secondary"}
+                      onClick={toggleRecording}
+                    >
+                      {isRecording ? <Square className="h-4 w-4" aria-hidden /> : <Mic className="h-4 w-4" aria-hidden />}
+                    </Button>
+                    <Button
+                      aria-label="Send message"
+                      className="h-10 w-10 px-0"
+                      disabled={!activeConversation || (!messageText.trim() && !selectedFiles.length)}
+                      onClick={sendMessage}
+                    >
+                      <Send className="h-4 w-4" aria-hidden />
+                    </Button>
+                  </div>
                 </div>
-                <p className="mt-2 text-xs text-zinc-500">
-                  {messages.isFetching && activeConversation ? "Syncing messages" : "Ctrl+Enter to send"}
+                {selectedFiles.length ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {selectedFiles.map((file) => (
+                      <button
+                        key={`${file.name}-${file.size}-${file.lastModified}`}
+                        className="inline-flex max-w-56 items-center gap-1 truncate rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-200"
+                        onClick={() => setSelectedFiles((current) => current.filter((item) => item !== file))}
+                      >
+                        <Paperclip className="h-3 w-3 flex-none" aria-hidden />
+                        <span className="truncate">{file.name}</span>
+                        <X className="h-3 w-3 flex-none" aria-hidden />
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <p className="mt-1 hidden text-xs text-zinc-500 sm:block">
+                  {isRecording
+                    ? "Recording voice message"
+                    : messages.isFetching && activeConversation
+                      ? "Syncing messages"
+                      : "Ctrl+Enter to send"}
                 </p>
               </div>
             </Panel>
@@ -816,15 +961,17 @@ function MemberPicker({
 
 function Dialog({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-zinc-950/30 p-4">
-      <div className="w-full max-w-lg rounded-lg border border-zinc-200 bg-white shadow-xl">
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-zinc-950/30 p-0 sm:items-center sm:p-4">
+      <div className="max-h-[92dvh] w-full max-w-lg overflow-hidden rounded-t-lg border border-zinc-200 bg-white shadow-xl sm:rounded-lg">
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-          <h3 className="font-semibold text-zinc-950">{title}</h3>
+          <h3 className="min-w-0 truncate font-semibold text-zinc-950">{title}</h3>
           <Button aria-label="Close dialog" size="icon" variant="ghost" onClick={onClose}>
             <X className="h-4 w-4" aria-hidden />
           </Button>
         </div>
-        <div className="p-4">{children}</div>
+        <div className="max-h-[calc(92dvh-4rem)] overflow-y-auto p-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -848,6 +995,57 @@ function SearchInput({
         value={value}
         onChange={(event) => onChange(event.target.value)}
       />
+    </div>
+  );
+}
+
+function MobileConversationStrip({
+  conversations,
+  currentUserId,
+  selectedId,
+  onSelect,
+}: {
+  conversations: TeamChatConversation[];
+  currentUserId: string;
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="-mx-3 mt-2 overflow-x-auto px-3">
+      <div className="flex min-w-max gap-2 pb-1">
+        {conversations.map((conversation) => {
+          const selected = selectedId === conversation.id;
+          const title = conversationDisplayName(conversation, currentUserId);
+          return (
+            <button
+              key={`mobile-${conversation.id}`}
+              className={cn(
+                "flex w-40 items-center gap-2 rounded-md border px-3 py-2 text-left transition",
+                selected
+                  ? "border-[#f2b49b] bg-[#f8d8ca] text-[#083d59]"
+                  : "border-zinc-200 bg-white text-zinc-700",
+              )}
+              onClick={() => onSelect(conversation.id)}
+            >
+              {conversation.kind === "direct" ? (
+                <PresenceDot status={conversationPresence(conversation, currentUserId)?.chat_status ?? "offline"} />
+              ) : (
+                <Hash className="h-4 w-4 flex-none text-zinc-500" aria-hidden />
+              )}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium">{title}</span>
+                <span className="block truncate text-xs text-zinc-500">{conversationPreview(conversation)}</span>
+              </span>
+              {conversation.unread_count ? <Badge tone="amber">{conversation.unread_count}</Badge> : null}
+            </button>
+          );
+        })}
+        {!conversations.length ? (
+          <div className="rounded-md border border-dashed border-zinc-300 px-3 py-2 text-sm text-zinc-400">
+            No conversations yet
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -891,8 +1089,7 @@ function ConversationGroup({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{title}</span>
                   <span className="block truncate text-xs text-zinc-500">
-                    {conversation.latest_message?.content ??
-                      `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`}
+                    {conversationPreview(conversation)}
                   </span>
                 </span>
                 {conversation.unread_count ? <Badge tone="amber">{conversation.unread_count}</Badge> : null}
@@ -942,24 +1139,33 @@ function MessageRow({
   const isMine = message.user_id === currentUserId;
   const isEditing = editingMessageId === message.id;
   return (
-    <div className={cn("group flex gap-3 rounded-md p-2 hover:bg-white", isMine && "bg-white/70")}>
-      <div className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-[#083d59] text-xs font-semibold text-white">
-        {initials(message.full_name || message.email)}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <span className="font-medium text-zinc-950">{message.full_name || message.email}</span>
-          <span className="text-xs text-zinc-500">{formatTime(message.created_at)}</span>
-          {message.edited_at && !message.deleted_at ? <span className="text-xs text-zinc-400">edited</span> : null}
+    <div className={cn("group flex w-full gap-2 px-1 py-1", isMine && "justify-end")}>
+      {!isMine ? (
+        <div className="mt-5 flex h-8 w-8 flex-none items-center justify-center rounded-md bg-[#083d59] text-xs font-semibold text-white">
+          {initials(message.full_name || message.email)}
         </div>
-        {isEditing ? (
-          <div className="mt-2 space-y-2">
+      ) : null}
+      <div className={cn("flex min-w-0 max-w-[86%] flex-col sm:max-w-[74%]", isMine ? "items-end" : "items-start")}>
+        <div className={cn("flex max-w-full flex-wrap items-baseline gap-2 px-1", isMine && "justify-end")}>
+          {!isMine ? <span className="truncate text-xs font-medium text-zinc-700">{message.full_name || message.email}</span> : null}
+          <span className="text-[11px] text-zinc-500">{formatTime(message.created_at)}</span>
+          {message.edited_at && !message.deleted_at ? <span className="text-[11px] text-zinc-400">edited</span> : null}
+        </div>
+        <div
+          className={cn(
+            "mt-1 max-w-full rounded-2xl px-3 py-2 shadow-sm",
+            isMine ? "rounded-br-md bg-[#f8d8ca] text-[#083d59]" : "rounded-bl-md bg-white text-zinc-900",
+            message.deleted_at && "bg-zinc-100 text-zinc-400",
+          )}
+        >
+          {isEditing ? (
+            <div className="space-y-2">
             <Textarea
-              className="min-h-20"
+              className="min-h-20 min-w-[220px]"
               value={editingContent}
               onChange={(event) => onEditingContentChange(event.target.value)}
             />
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button size="sm" onClick={() => onSave(message)}>
                 <Check className="h-4 w-4" aria-hidden />
                 Save
@@ -969,15 +1175,21 @@ function MessageRow({
                 Cancel
               </Button>
             </div>
-          </div>
-        ) : (
-          <p className={cn("mt-1 whitespace-pre-wrap text-sm leading-6", message.deleted_at ? "italic text-zinc-400" : "text-zinc-800")}>
-            {message.content}
-          </p>
-        )}
+            </div>
+          ) : (
+            <>
+              {message.content ? (
+                <p className={cn("whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]", message.deleted_at && "italic")}>
+                  {message.content}
+                </p>
+              ) : null}
+              {!message.deleted_at && message.attachments.length ? <AttachmentList message={message} /> : null}
+            </>
+          )}
+        </div>
       </div>
       {isMine && !message.deleted_at && !isEditing ? (
-        <div className="flex flex-none gap-1 opacity-0 transition group-hover:opacity-100">
+        <div className="flex flex-none gap-1 self-center opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
           <Button aria-label="Edit message" size="icon" variant="ghost" onClick={() => onEdit(message)}>
             <Pencil className="h-4 w-4" aria-hidden />
           </Button>
@@ -986,6 +1198,41 @@ function MessageRow({
           </Button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function AttachmentList({ message }: { message: TeamChatMessage }) {
+  return (
+    <div className="mt-2 max-w-full space-y-2">
+      {message.attachments.map((attachment) => {
+        const url = teamChatAttachmentUrl(attachment.download_url);
+        if (attachment.kind === "voice" || attachment.content_type?.startsWith("audio/")) {
+          return (
+            <div key={attachment.id} className="max-w-full rounded-md border border-zinc-200 bg-white p-2">
+              <div className="mb-2 flex items-center gap-2 text-xs text-zinc-500">
+                <Mic className="h-3.5 w-3.5" aria-hidden />
+                <span className="min-w-0 flex-1 truncate">{attachment.filename}</span>
+                <span className="flex-none">{formatBytes(attachment.size_bytes)}</span>
+              </div>
+              <audio className="w-full" controls src={url}>
+                <a href={url}>Download voice message</a>
+              </audio>
+            </div>
+          );
+        }
+        return (
+          <a
+            key={attachment.id}
+            className="flex max-w-full items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800 hover:border-[#e3602a] hover:text-[#083d59]"
+            href={url}
+          >
+            <Paperclip className="h-4 w-4 flex-none text-zinc-500" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{attachment.filename}</span>
+            <span className="flex-none text-xs text-zinc-500">{formatBytes(attachment.size_bytes)}</span>
+          </a>
+        );
+      })}
     </div>
   );
 }
@@ -1041,6 +1288,18 @@ function conversationDisplayName(conversation: TeamChatConversation, currentUser
   return other?.full_name || other?.email || "Direct message";
 }
 
+function conversationPreview(conversation: TeamChatConversation) {
+  const latest = conversation.latest_message;
+  if (!latest) {
+    return `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`;
+  }
+  if (latest.content) return latest.content;
+  if (latest.message_type === "voice") return "Voice message";
+  if (latest.attachments.length === 1) return latest.attachments[0].filename;
+  if (latest.attachments.length > 1) return `${latest.attachments.length} attachments`;
+  return "Message";
+}
+
 function conversationPresence(conversation: TeamChatConversation, currentUserId: string) {
   return conversation.participants.find((participant) => participant.user_id !== currentUserId);
 }
@@ -1074,4 +1333,10 @@ function formatTime(value?: string | null) {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }

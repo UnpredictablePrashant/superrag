@@ -329,6 +329,16 @@ export interface CompanyProfile {
   updated_at: string;
 }
 
+export interface McpSetup {
+  mcp_url: string;
+  token: string;
+  expires_at: string;
+  server_name: string;
+  cursor_config: Record<string, unknown>;
+  claude_config: Record<string, unknown>;
+  generic_config: Record<string, unknown>;
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -356,6 +366,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export function getMe() {
   return api<AuthResponse>("/auth/me");
+}
+
+export function createMcpSetup(client: "cursor" | "claude" | "generic" = "generic") {
+  return api<McpSetup>(`/mcp/setup?client=${client}`, { method: "POST" });
 }
 
 export function updateMe(payload: UserProfilePatchInput) {
@@ -606,6 +620,15 @@ export interface TeamChatMessage {
   email: string;
   full_name?: string | null;
   content: string;
+  message_type: "text" | "attachment" | "voice";
+  attachments: Array<{
+    id: string;
+    filename: string;
+    content_type?: string | null;
+    size_bytes: number;
+    kind: "attachment" | "voice";
+    download_url: string;
+  }>;
   edited_at?: string | null;
   deleted_at?: string | null;
   created_at: string;
@@ -618,6 +641,8 @@ export interface TeamChatConversation {
   name?: string | null;
   description?: string | null;
   created_by_user_id: string;
+  is_public: boolean;
+  is_default: boolean;
   is_archived: boolean;
   last_message_at?: string | null;
   created_at: string;
@@ -661,6 +686,26 @@ export function createTeamChatMessage(conversationId: string, content: string) {
     method: "POST",
     body: JSON.stringify({ content }),
   });
+}
+
+export function createTeamChatUploadMessage(
+  conversationId: string,
+  payload: { content?: string; messageType: "attachment" | "voice"; files: File[] },
+) {
+  const formData = new FormData();
+  formData.append("content", payload.content ?? "");
+  formData.append("message_type", payload.messageType);
+  for (const file of payload.files) {
+    formData.append("files", file);
+  }
+  return api<TeamChatMessage>(`/team-chat/conversations/${conversationId}/messages/upload`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function teamChatAttachmentUrl(downloadUrl: string) {
+  return `${API_URL}${downloadUrl}`;
 }
 
 export function updateTeamChatMessage(conversationId: string, messageId: string, content: string) {

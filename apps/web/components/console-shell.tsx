@@ -38,6 +38,8 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: getMe, retry: false });
   const canUseAdminNav = me.data?.role === "Owner" || me.data?.role === "Admin";
+  const visibleNav = nav.filter((item) => !item.adminOnly || canUseAdminNav);
+  const isChatRoute = pathname.startsWith("/chat");
 
   React.useEffect(() => {
     if (me.isError) router.replace("/login");
@@ -58,7 +60,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#f8f2ef]">
+    <div className="min-h-[100dvh] bg-[#f8f2ef]">
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 border-r border-[#e8d9d2] bg-white lg:block">
         <div className="flex h-full flex-col">
           <div className="flex h-20 flex-col items-start justify-center border-b border-[#e8d9d2] px-5">
@@ -75,7 +77,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <nav className="flex-1 space-y-1 px-3 py-4">
-            {nav.filter((item) => !item.adminOnly || canUseAdminNav).map((item) => {
+            {visibleNav.map((item) => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
               return (
                 <Link
@@ -108,16 +110,23 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
       <div className="lg:pl-72">
-        <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-[#e8d9d2] bg-white/90 px-4 backdrop-blur lg:px-8">
-          <div>
-            <p className="text-sm font-medium text-zinc-500">Connected company knowledge</p>
-            <h1 className="text-lg font-semibold text-[#083d59]">{me.data?.organization?.name ?? "Unitus Capital"}</h1>
+        <header
+          className={cn(
+            "sticky top-0 z-10 flex min-h-14 items-center justify-between gap-3 border-b border-[#e8d9d2] bg-white/95 px-3 py-2 backdrop-blur lg:min-h-16 lg:px-8",
+            isChatRoute && "hidden lg:flex",
+          )}
+        >
+          <div className="min-w-0">
+            <p className="hidden text-sm font-medium text-zinc-500 sm:block">Connected company knowledge</p>
+            <h1 className="truncate text-base font-semibold text-[#083d59] lg:text-lg">
+              {me.data?.organization?.name ?? "Unitus Capital"}
+            </h1>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-none items-center gap-2">
             <Button variant="secondary" size="icon" title="Notifications">
               <Bell className="h-4 w-4" aria-hidden />
             </Button>
-            <Link href="/chat">
+            <Link className="hidden sm:block" href="/chat">
               <Button>
                 <MessageSquare className="h-4 w-4" aria-hidden />
                 Chat
@@ -125,8 +134,37 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             </Link>
           </div>
         </header>
-        <main className="px-4 py-6 lg:px-8">{children}</main>
+        <main
+          className={cn(
+            "px-3 py-4 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:px-8 lg:py-6 lg:pb-6",
+            isChatRoute && "h-[100dvh] overflow-hidden p-0 lg:h-auto lg:overflow-visible lg:px-8 lg:py-6",
+          )}
+        >
+          {children}
+        </main>
       </div>
+      {!isChatRoute ? (
+        <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-[#e8d9d2] bg-white/95 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-8px_24px_rgba(8,61,89,0.08)] backdrop-blur lg:hidden">
+          <div className="flex gap-1 overflow-x-auto">
+            {visibleNav.map((item) => {
+              const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "flex min-w-16 flex-1 flex-col items-center justify-center gap-1 rounded-md px-2 py-2 text-[11px] font-medium transition",
+                    active ? "bg-[#f8d8ca] text-[#083d59]" : "text-zinc-600 hover:bg-[#f8f2ef] hover:text-[#083d59]",
+                  )}
+                >
+                  <item.icon className="h-4 w-4" aria-hidden />
+                  <span className="max-w-16 truncate">{item.label}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </nav>
+      ) : null}
     </div>
   );
 }

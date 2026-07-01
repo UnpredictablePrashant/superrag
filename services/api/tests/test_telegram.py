@@ -1,6 +1,11 @@
 from types import SimpleNamespace
 
-from app.services.telegram import _command_body, _message_mode, _start_text
+from app.services.telegram import (
+    _command_body,
+    _message_mode,
+    _start_text,
+    should_process_telegram_update_inline,
+)
 
 
 def test_telegram_command_body_accepts_group_bot_suffix() -> None:
@@ -19,6 +24,12 @@ def test_telegram_add_command_body_accepts_caption() -> None:
 def test_telegram_start_has_own_mode() -> None:
     assert _message_mode({"text": "/start"}) == "start"
     assert _message_mode({"text": "/start@UnitusCapitalBot setup"}) == "start"
+
+
+def test_telegram_start_and_help_process_inline() -> None:
+    assert should_process_telegram_update_inline({"message": {"text": "/start"}})
+    assert should_process_telegram_update_inline({"message": {"text": "/help"}})
+    assert not should_process_telegram_update_inline({"message": {"text": "/ask what is the policy?"}})
 
 
 def test_telegram_start_guides_unmatched_user() -> None:

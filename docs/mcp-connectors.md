@@ -1,5 +1,87 @@
 # MCP Connectors
 
+This product can use external MCP servers as connectors, and it can also expose the RAG workspace itself as an MCP server for assistants such as Claude, Cursor, and other MCP-compatible clients.
+
+## Expose RAG Console as an MCP Server
+
+The API mounts a Streamable HTTP MCP endpoint at:
+
+```text
+http://localhost:8000/mcp
+```
+
+In production, replace `localhost:8000` with the public API origin. The MCP server authenticates each user with the same RAG Console session token used by the web app. For HTTP clients, send it as a bearer token:
+
+```http
+Authorization: Bearer <rag_console_session_token>
+```
+
+For stdio clients, pass it through `RAG_CONSOLE_SESSION_TOKEN`.
+
+### Available RAG Tools
+
+External assistants discover these tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `rag_workspace_summary` | Show organization, document, knowledge base, and indexed-document counts. |
+| `rag_list_knowledge_bases` | List available knowledge bases and retrieval defaults. |
+| `rag_list_documents` | List documents by knowledge base, search text, status, and limit. |
+| `rag_get_document_preview` | Read the cleaned or latest derived preview text for a document. |
+| `rag_search` | Search indexed enterprise content and return source chunks. |
+| `rag_ask` | Ask a grounded question over enterprise content and return answer plus citations. |
+
+All tools are scoped to the authenticated user's organization and role. Search and answer tools reuse the same retrieval permissions as in-app chat.
+
+### Cursor HTTP Config
+
+Use this when Cursor can reach your hosted API directly:
+
+```json
+{
+  "mcpServers": {
+    "rag-console": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer <rag_console_session_token>"
+      }
+    }
+  }
+}
+```
+
+### Claude or Cursor Stdio Config
+
+Use this when the assistant runs on the same machine as the API project. Run it from `services/api` so the Python module path resolves:
+
+```json
+{
+  "mcpServers": {
+    "rag-console": {
+      "command": "python",
+      "args": ["-m", "app.mcp_server"],
+      "env": {
+        "PYTHONPATH": "<absolute_path_to_enterpriserag>/services/api",
+        "RAG_CONSOLE_SESSION_TOKEN": "<rag_console_session_token>",
+        "DATABASE_URL": "postgresql+psycopg2://rag:rag@localhost:5432/rag_console"
+      }
+    }
+  }
+}
+```
+
+To run a standalone HTTP MCP process instead of the API-mounted endpoint:
+
+```powershell
+cd services/api
+python -m app.mcp_server --transport streamable-http --host 0.0.0.0 --port 8010 --path /mcp
+```
+
+Then configure the client URL as `http://localhost:8010/mcp`.
+
+## Use External MCP Servers as Connectors
+
 MCP connectors can run either through Streamable HTTP or through stdio commands. Paste Cursor-style `mcpServers` JSON and the API infers the transport, selects the first non-disabled server, and discovers tools when the connector is tested.
 
 ## Hosted HTTP Config

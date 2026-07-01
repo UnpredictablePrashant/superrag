@@ -113,6 +113,11 @@ def process_telegram_update(db: Session, integration: TelegramIntegration, updat
         db.commit()
 
 
+def should_process_telegram_update_inline(update: dict[str, Any]) -> bool:
+    message = update.get("message") or update.get("edited_message") or {}
+    return _message_mode(message) in {"start", "help"}
+
+
 def record_telegram_update_receipt(
     db: Session,
     integration: TelegramIntegration,

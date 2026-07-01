@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging, logger
+from app.mcp_server import create_mcp_http_app
 from app.services.storage import ensure_bucket
 
 configure_logging()
@@ -68,3 +69,4 @@ def healthz() -> dict:
 
 
 app.include_router(api_router)
+app.mount("/", create_mcp_http_app())

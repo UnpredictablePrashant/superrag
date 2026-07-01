@@ -26,6 +26,7 @@ from app.services.telegram import (
     process_telegram_update,
     record_telegram_update_receipt,
     register_telegram_webhook,
+    should_process_telegram_update_inline,
     test_telegram_bot,
 )
 from app.workers.tasks import process_telegram_update_task
@@ -213,6 +214,9 @@ async def telegram_webhook(
     payload = await request.json()
     record_telegram_update_receipt(db, integration, payload)
     db.commit()
+    if should_process_telegram_update_inline(payload):
+        process_telegram_update(db, integration, payload)
+        return {"ok": True, "processed": "inline"}
     try:
         process_telegram_update_task.delay(str(integration.id), payload)
     except Exception:

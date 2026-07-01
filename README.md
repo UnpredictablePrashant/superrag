@@ -41,7 +41,7 @@ GitHub Actions deployment to a single EC2 instance at `https://rag.atharvaai.com
 - Hybrid retrieval using pgvector similarity, PostgreSQL full-text search, Reciprocal Rank Fusion, local reranking fallback, context assembly, citations, and tenant/access filters.
 - Chat UI with sessions, streaming display, citation drawer, selected knowledge base, retrieval controls, and debug toggle.
 - Settings pages for providers, capability registry, profiles, notifications, security posture, and audit logs.
-- Telegram bot ingestion/querying and Cursor-style MCP connector setup are documented in `docs/telegram.md` and `docs/mcp-connectors.md`.
+- Telegram bot ingestion/querying, external MCP connector setup, and exposing this RAG workspace as an MCP server are documented in `docs/telegram.md` and `docs/mcp-connectors.md`.
 - Terraform starter for S3, KMS, CloudWatch, and placeholders for ECS/Fargate, RDS pgvector, ElastiCache, ALB, and SES.
 
 ## Architecture Decisions

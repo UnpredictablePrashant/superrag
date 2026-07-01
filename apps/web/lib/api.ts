@@ -452,6 +452,23 @@ export interface RelationshipSummary {
   upcoming_actions: RelationshipActionItem[];
 }
 
+export interface RelationshipScanRun {
+  id: string;
+  scan_type: string;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  options: Record<string, unknown>;
+  total_count: number;
+  processed_count: number;
+  last_scanned_document_id?: string | null;
+  last_scanned_document_name?: string | null;
+  result: Record<string, unknown>;
+  error?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface RelationshipActionItemCreateInput {
   title: string;
   description?: string | null;
@@ -975,9 +992,26 @@ export function updateRelationshipActionItem(id: string, payload: RelationshipAc
   });
 }
 
+export function getLatestRelationshipScan() {
+  return api<RelationshipScanRun | null>("/relationships/scan-runs/latest");
+}
+
 export function rescanRelationships(documentIds: string[] = []) {
-  return api<{ entities: number; interactions: number; actions: number; deals: number }>("/relationships/rescan", {
+  return api<RelationshipScanRun>("/relationships/rescan", {
     method: "POST",
     body: JSON.stringify({ document_ids: documentIds }),
+  });
+}
+
+export function discoverWebRelationships(query?: string | null) {
+  return api<RelationshipScanRun>("/relationships/web-discovery", {
+    method: "POST",
+    body: JSON.stringify({ query: query || null }),
+  });
+}
+
+export function deleteAllRelationships() {
+  return api<{ deleted: Record<string, number> }>("/relationships/all", {
+    method: "DELETE",
   });
 }

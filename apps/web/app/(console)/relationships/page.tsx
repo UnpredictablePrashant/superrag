@@ -4,7 +4,10 @@ import { EmptyState } from "@/components/empty-state";
 import { ErrorBox } from "@/components/error-box";
 import {
   createRelationshipActionItem,
+  deleteAllRelationships,
+  discoverWebRelationships,
   getRelationshipEntity,
+  getLatestRelationshipScan,
   getRelationshipSummary,
   listRelationshipActionItems,
   listRelationshipDeals,
@@ -14,6 +17,7 @@ import {
   RelationshipDeal,
   RelationshipEntity,
   RelationshipInteraction,
+  RelationshipScanRun,
   rescanRelationships,
   updateRelationshipActionItem,
 } from "@/lib/api";
@@ -26,12 +30,14 @@ import {
   Building2,
   CalendarClock,
   Check,
+  Globe,
   Handshake,
   ListTodo,
   MessageSquare,
   RefreshCw,
   Search,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
@@ -48,9 +54,15 @@ export default function RelationshipsPage() {
   const [search, setSearch] = React.useState("");
   const [entityType, setEntityType] = React.useState("");
   const [selectedEntityId, setSelectedEntityId] = React.useState("");
+  const [webQuery, setWebQuery] = React.useState("");
   const [notice, setNotice] = React.useState("");
   const [error, setError] = React.useState("");
   const summary = useQuery({ queryKey: ["relationships-summary"], queryFn: getRelationshipSummary, refetchInterval: 15000 });
+  const latestScan = useQuery({
+    queryKey: ["relationship-scan-latest"],
+    queryFn: getLatestRelationshipScan,
+    refetchInterval: (query) => (isActiveScan(query.state.data) ? 5000 : 15000),
+  });
   const entities = useQuery({
     queryKey: ["relationship-entities", search, entityType],
     queryFn: () => listRelationshipEntities({ search, entity_type: entityType }),
@@ -64,6 +76,7 @@ export default function RelationshipsPage() {
   const deals = useQuery({ queryKey: ["relationship-deals"], queryFn: listRelationshipDeals });
   const actions = useQuery({ queryKey: ["relationship-actions"], queryFn: () => listRelationshipActionItems("open") });
   const selectedEntity = entityDetail.data;
+  const activeScan = isActiveScan(latestScan.data);
 
   React.useEffect(() => {
     if (!selectedEntityId && entities.data?.[0]) setSelectedEntityId(entities.data[0].id);
@@ -73,19 +86,48 @@ export default function RelationshipsPage() {
     setNotice("");
     setError("");
     try {
-      const result = await rescanRelationships();
-      setNotice(
-        `Relationship rescan complete: ${result.entities} entit(ies), ${result.interactions} interaction(s), ${result.actions} action item(s), ${result.deals} deal signal(s).`,
-      );
+      const run = await rescanRelationships();
+      setNotice(isActiveScan(run) ? "Relationship scan is already running in the background." : "Relationship scan queued. OpenAI will verify candidates before adding records.");
+      await queryClient.invalidateQueries({ queryKey: ["relationship-scan-latest"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not rescan relationship intelligence.");
+    }
+  }
+
+  async function discoverWeb() {
+    setNotice("");
+    setError("");
+    try {
+      await discoverWebRelationships(webQuery || undefined);
+      setNotice("Internet discovery queued. OpenAI web search and verification will run in the background.");
+      setWebQuery("");
+      await queryClient.invalidateQueries({ queryKey: ["relationship-scan-latest"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start internet discovery.");
+    }
+  }
+
+  async function clearAll() {
+    setNotice("");
+    setError("");
+    if (!window.confirm("Delete all relationship intelligence records and scan history? Indexed documents and existing app data will stay untouched.")) {
+      return;
+    }
+    try {
+      const result = await deleteAllRelationships();
+      const count = Object.values(result.deleted).reduce((sum, value) => sum + value, 0);
+      setNotice(`Deleted ${count} relationship intelligence record(s).`);
+      setSelectedEntityId("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["relationships-summary"] }),
         queryClient.invalidateQueries({ queryKey: ["relationship-entities"] }),
         queryClient.invalidateQueries({ queryKey: ["relationship-interactions"] }),
         queryClient.invalidateQueries({ queryKey: ["relationship-deals"] }),
         queryClient.invalidateQueries({ queryKey: ["relationship-actions"] }),
+        queryClient.invalidateQueries({ queryKey: ["relationship-scan-latest"] }),
       ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not rescan relationship intelligence.");
+      setError(err instanceof Error ? err.message : "Could not delete relationship intelligence records.");
     }
   }
 
@@ -117,15 +159,48 @@ export default function RelationshipsPage() {
               Chat
             </Button>
           </Link>
-          <Button onClick={() => void rescan()}>
+          <Button variant="secondary" disabled={activeScan} onClick={() => void discoverWeb()}>
+            <Globe className="h-4 w-4" aria-hidden />
+            Find Internet Leads
+          </Button>
+          <Button variant="secondary" disabled={activeScan} onClick={() => void clearAll()}>
+            <Trash2 className="h-4 w-4" aria-hidden />
+            Delete All
+          </Button>
+          <Button disabled={activeScan} onClick={() => void rescan()}>
             <RefreshCw className="h-4 w-4" aria-hidden />
-            Rescan
+            {activeScan ? "Scanning" : "Rescan"}
           </Button>
         </div>
       </div>
 
       <ErrorBox message={error} />
       {notice ? <div className="rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div> : null}
+      <ScanStatusPanel scan={latestScan.data} />
+
+      <Panel className="p-4">
+        <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+          <div>
+            <Label>Internet discovery query</Label>
+            <Input
+              className="mt-2"
+              value={webQuery}
+              onChange={(event) => setWebQuery(event.target.value)}
+              placeholder="Optional: fintech growth investors in India with public contact emails"
+              disabled={activeScan}
+            />
+          </div>
+          <div className="flex items-end">
+            <Button variant="secondary" disabled={activeScan} onClick={() => void discoverWeb()}>
+              <Globe className="h-4 w-4" aria-hidden />
+              Discover
+            </Button>
+          </div>
+        </div>
+        <p className="mt-2 text-xs text-zinc-500">
+          Uses the backend OpenAI provider key for web search and classification. The API key is never sent to the browser.
+        </p>
+      </Panel>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <Metric label="Relationships" value={summary.data?.entity_count ?? 0} icon={Handshake} />
@@ -223,6 +298,48 @@ function RelationshipTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function ScanStatusPanel({ scan }: { scan?: RelationshipScanRun | null }) {
+  if (!scan) {
+    return (
+      <Panel className="p-4">
+        <div className="flex items-center gap-2 text-sm text-zinc-600">
+          <Sparkles className="h-4 w-4 text-[#e3602a]" aria-hidden />
+          OpenAI verification is required before new relationship records are added.
+        </div>
+      </Panel>
+    );
+  }
+  const active = isActiveScan(scan);
+  const progress = scan.total_count ? Math.round((scan.processed_count / Math.max(1, scan.total_count)) * 100) : 0;
+  return (
+    <Panel className="p-4">
+      <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={active ? "amber" : scan.status === "failed" ? "red" : "green"}>{labelize(scan.status)}</Badge>
+            <span className="text-sm font-medium text-zinc-950">{labelize(scan.scan_type)} scan</span>
+            {active ? <span className="text-sm text-zinc-500">running in background</span> : null}
+          </div>
+          <p className="mt-1 text-sm text-zinc-600">
+            {scan.last_scanned_document_name ? `Last scanned file: ${scan.last_scanned_document_name}` : "No file scanned yet"}
+            {scan.completed_at ? ` / completed ${shortDate(scan.completed_at)}` : ""}
+            {scan.error ? ` / ${scan.error}` : ""}
+          </p>
+        </div>
+        <div className="min-w-52">
+          <div className="flex justify-between text-xs text-zinc-500">
+            <span>{scan.processed_count}/{scan.total_count || 0}</span>
+            <span>{progress}%</span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-100">
+            <div className="h-full bg-[#e3602a]" style={{ width: `${active ? Math.max(8, progress) : progress}%` }} />
+          </div>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -568,4 +685,8 @@ function compactAmount(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return String(value);
+}
+
+function isActiveScan(scan?: RelationshipScanRun | null) {
+  return Boolean(scan && ["queued", "running"].includes(scan.status));
 }

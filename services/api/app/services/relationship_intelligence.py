@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -7,6 +8,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -19,10 +21,14 @@ from app.models.entities import (
     EntityMention,
     Interaction,
     InteractionParticipant,
+    Notification,
     RelationshipEntity,
     RelationshipEvidence,
     RelationshipRole,
+    RelationshipScanRun,
 )
+from app.services.model_runtime import get_openai_connection
+from app.services.openai_web_search import openai_web_search_candidates
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,10 @@ class EntitySignal:
     roles: tuple[str, ...]
     confidence: float
     excerpt: str
+    sector: str | None = None
+    geography: str | None = None
+    website_url: str | None = None
+    contact_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +136,7 @@ def process_document_relationship_intelligence(
     document: Document,
     text: str,
     source_type: str | None = None,
+    verify_with_openai: bool = True,
 ) -> dict[str, int]:
     signals = extract_relationship_signals(
         text,
@@ -133,6 +144,14 @@ def process_document_relationship_intelligence(
         source_type=source_type or _source_type(document),
         created_at=document.created_at,
     )
+    if verify_with_openai:
+        signals = verify_relationship_signals(
+            db,
+            organization_id=document.organization_id,
+            signals=signals,
+            source_title=document.name,
+            source_text=text,
+        )
     return upsert_relationship_signals(
         db,
         organization_id=document.organization_id,
@@ -158,6 +177,8 @@ def rescan_relationship_intelligence(
     *,
     organization_id: UUID,
     document_ids: list[UUID] | None = None,
+    since: datetime | None = None,
+    scan_run: RelationshipScanRun | None = None,
 ) -> dict[str, int]:
     query = select(Document).where(
         Document.organization_id == organization_id,
@@ -165,14 +186,183 @@ def rescan_relationship_intelligence(
     )
     if document_ids:
         query = query.where(Document.id.in_(document_ids))
+    elif since:
+        query = query.where(Document.updated_at > since)
     totals = {"entities": 0, "interactions": 0, "actions": 0, "deals": 0}
-    for document in db.scalars(query.order_by(Document.updated_at.desc())):
+    documents = list(db.scalars(query.order_by(Document.updated_at, Document.created_at)))
+    if scan_run:
+        scan_run.total_count = len(documents)
+        db.commit()
+    for document in documents:
         text = _latest_document_text(db, document)
         if not text.strip():
+            if scan_run:
+                scan_run.processed_count += 1
+                scan_run.last_scanned_document_id = document.id
+                db.commit()
             continue
         result = process_document_relationship_intelligence(db, document=document, text=text)
         totals = {key: totals[key] + result.get(key, 0) for key in totals}
+        if scan_run:
+            scan_run.processed_count += 1
+            scan_run.last_scanned_document_id = document.id
+            scan_run.result = totals
+            db.commit()
+    if not documents and scan_run:
+        scan_run.result = totals
     db.commit()
+    return totals
+
+
+def process_relationship_scan_run(db: Session, scan_run_id: UUID) -> RelationshipScanRun:
+    run = db.get(RelationshipScanRun, scan_run_id)
+    if not run:
+        raise ValueError("Relationship scan run not found.")
+    if run.status in {"running", "completed", "failed"}:
+        return run
+    run.status = "running"
+    run.started_at = datetime.now(UTC)
+    run.error = None
+    db.add(
+        Notification(
+            organization_id=run.organization_id,
+            user_id=run.requested_by_user_id,
+            kind="relationship_scan_started",
+            title="Relationship scan started",
+            body="OpenAI verification is running in the background before relationship records are added.",
+            severity="info",
+            metadata_json={"relationship_scan_run_id": str(run.id), "scan_type": run.scan_type},
+        )
+    )
+    db.commit()
+
+    try:
+        previous_completed = db.scalar(
+            select(RelationshipScanRun)
+            .where(
+                RelationshipScanRun.organization_id == run.organization_id,
+                RelationshipScanRun.status == "completed",
+                RelationshipScanRun.completed_at.is_not(None),
+                RelationshipScanRun.id != run.id,
+            )
+            .order_by(RelationshipScanRun.completed_at.desc())
+            .limit(1)
+        )
+        incremental = run.options.get("incremental", True) is not False
+        since = previous_completed.completed_at if incremental and previous_completed else None
+        totals = {"entities": 0, "interactions": 0, "actions": 0, "deals": 0}
+        if run.scan_type in {"documents", "full"}:
+            totals = rescan_relationship_intelligence(
+                db,
+                organization_id=run.organization_id,
+                document_ids=[UUID(value) for value in run.options.get("document_ids", [])],
+                since=since,
+                scan_run=run,
+            )
+        elif run.scan_type == "web_discovery":
+            totals = discover_web_relationships(db, scan_run=run)
+        run.status = "completed"
+        run.completed_at = datetime.now(UTC)
+        run.result = totals
+        db.add(
+            Notification(
+                organization_id=run.organization_id,
+                user_id=run.requested_by_user_id,
+                kind="relationship_scan_completed",
+                title="Relationship scan completed",
+                body=(
+                    f"Verified {totals['entities']} entit(ies), {totals['interactions']} interaction(s), "
+                    f"{totals['actions']} action item(s), and {totals['deals']} deal signal(s)."
+                ),
+                severity="success",
+                metadata_json={"relationship_scan_run_id": str(run.id), **totals},
+            )
+        )
+        db.commit()
+        return run
+    except Exception as exc:
+        run.status = "failed"
+        run.error = str(exc)[:1000]
+        run.completed_at = datetime.now(UTC)
+        db.add(
+            Notification(
+                organization_id=run.organization_id,
+                user_id=run.requested_by_user_id,
+                kind="relationship_scan_failed",
+                title="Relationship scan failed",
+                body=str(exc)[:500],
+                severity="warning",
+                metadata_json={"relationship_scan_run_id": str(run.id)},
+            )
+        )
+        db.commit()
+        raise
+
+
+def discover_web_relationships(db: Session, *, scan_run: RelationshipScanRun) -> dict[str, int]:
+    query = str(scan_run.options.get("query") or "").strip()
+    if not query:
+        existing = list(
+            db.scalars(
+                select(RelationshipEntity)
+                .where(
+                    RelationshipEntity.organization_id == scan_run.organization_id,
+                    RelationshipEntity.deleted_at.is_(None),
+                )
+                .order_by(RelationshipEntity.updated_at.desc())
+                .limit(12)
+            )
+        )
+        names = ", ".join(entity.name for entity in existing[:10]) or "investment banking clients and investors"
+        sectors = ", ".join({entity.sector for entity in existing if entity.sector}) or "adjacent sectors"
+        query = (
+            "Find credible investors and companies relevant to these investment banking relationships: "
+            f"{names}. Focus on {sectors}. Include company/investor category, sector, geography, website, "
+            "public contact email when available, and why they are relevant."
+        )
+    candidates = openai_web_search_candidates(
+        db,
+        organization_id=scan_run.organization_id,
+        query=query,
+        preferred_model=str(scan_run.options.get("model") or "gpt-5.1-mini"),
+    )
+    scan_run.total_count = len(candidates)
+    db.commit()
+    totals = {"entities": 0, "interactions": 0, "actions": 0, "deals": 0}
+    for candidate in candidates:
+        signals = extract_relationship_signals(
+            candidate.text,
+            title=candidate.document_name,
+            source_type="openai_web_discovery",
+            created_at=datetime.now(UTC),
+        )
+        signals = verify_relationship_signals(
+            db,
+            organization_id=scan_run.organization_id,
+            signals=signals,
+            source_title=candidate.document_name,
+            source_text=candidate.text,
+            discovery_query=query,
+        )
+        result = upsert_relationship_signals(
+            db,
+            organization_id=scan_run.organization_id,
+            signals=signals,
+            source_type="openai_web_discovery",
+            source_url=candidate.metadata.get("source_url"),
+            document_id=None,
+            connector_item_id=None,
+            source_title=candidate.document_name,
+            source_metadata={
+                "source": "openai_web_discovery",
+                "query": query,
+                "annotations": candidate.metadata.get("annotations", []),
+            },
+        )
+        totals = {key: totals[key] + result.get(key, 0) for key in totals}
+        scan_run.processed_count += 1
+        scan_run.result = totals
+        db.commit()
     return totals
 
 
@@ -199,6 +389,67 @@ def extract_relationship_signals(
     return RelationshipSignals(entities=entities, interactions=interactions, actions=actions, deals=deals)
 
 
+def verify_relationship_signals(
+    db: Session,
+    *,
+    organization_id: UUID,
+    signals: RelationshipSignals,
+    source_title: str,
+    source_text: str,
+    discovery_query: str | None = None,
+) -> RelationshipSignals:
+    if not signals.entities and not signals.actions and not signals.deals and not signals.interactions:
+        return signals
+    connection = get_openai_connection(db, organization_id)
+    if not connection:
+        raise ValueError("Relationship Intelligence requires an enabled OpenAI provider connection before records can be added.")
+    api_key, base_url = connection
+    payload = {
+        "source_title": source_title,
+        "discovery_query": discovery_query,
+        "entities": [
+            {
+                "name": entity.name,
+                "candidate_type": entity.entity_type,
+                "roles": list(entity.roles),
+                "excerpt": entity.excerpt,
+            }
+            for entity in signals.entities[:80]
+        ],
+        "interactions": [
+            {
+                "title": interaction.title,
+                "interaction_type": interaction.interaction_type,
+                "summary": interaction.summary,
+                "excerpt": interaction.excerpt,
+            }
+            for interaction in signals.interactions[:20]
+        ],
+        "actions": [
+            {"title": action.title, "priority": action.priority, "excerpt": action.excerpt}
+            for action in signals.actions[:50]
+        ],
+        "deals": [
+            {
+                "name": deal.name,
+                "deal_type": deal.deal_type,
+                "stage": deal.stage,
+                "summary": deal.summary,
+                "excerpt": deal.excerpt,
+            }
+            for deal in signals.deals[:20]
+        ],
+        "source_excerpt": source_text[:10000],
+    }
+    response = _call_openai_relationship_verifier(
+        api_key=api_key,
+        base_url=base_url,
+        model="gpt-5.1-mini",
+        payload=payload,
+    )
+    return _signals_from_verification_response(response, signals)
+
+
 def upsert_relationship_signals(
     db: Session,
     *,
@@ -212,6 +463,8 @@ def upsert_relationship_signals(
     source_metadata: dict[str, Any],
 ) -> dict[str, int]:
     entity_by_key: dict[tuple[str, str], RelationshipEntity] = {}
+    if not signals.entities:
+        return {"entities": 0, "interactions": 0, "actions": 0, "deals": 0}
     for signal in signals.entities:
         entity = _upsert_entity(db, organization_id, signal, source_metadata)
         entity_by_key[(_normalize(signal.name), signal.entity_type)] = entity
@@ -341,6 +594,162 @@ def _entity_signals_from_labels(lines: list[str]) -> list[EntitySignal]:
     return signals
 
 
+def _call_openai_relationship_verifier(
+    *,
+    api_key: str,
+    base_url: str | None,
+    model: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    url = f"{(base_url or 'https://api.openai.com/v1').rstrip('/')}/chat/completions"
+    system = (
+        "You verify relationship intelligence for an investment banking CRM. "
+        "Only approve real companies, investment firms/funds, or real people. "
+        "Reject headings, article titles, regulatory phrases, generic groups, products, verbs, sectors, and fragments. "
+        "Use the source excerpt as evidence. Return only valid JSON."
+    )
+    user = (
+        "Review these extracted candidates before database insertion. "
+        "Classify approved entities as company, investor, or person. "
+        "For companies and investors, add sector, geography, website_url, and contact_email only when supported by the text. "
+        "Approve actions/deals/interactions only when they are tied to at least one approved entity.\n\n"
+        "Return JSON with this shape:\n"
+        '{"entities":[{"name":"...","approved":true,"entity_type":"company|investor|person",'
+        '"roles":["client|prospective_client|investor|contact|founder|mentioned"],"confidence":0.0,'
+        '"sector":null,"geography":null,"website_url":null,"contact_email":null,"reason":"..."}],'
+        '"interactions":[{"title":"...","approved":true,"confidence":0.0}],'
+        '"actions":[{"title":"...","approved":true,"confidence":0.0}],'
+        '"deals":[{"name":"...","approved":true,"confidence":0.0}]}\n\n'
+        f"Payload:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    with httpx.Client(timeout=90) as client:
+        response = client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "temperature": 0,
+            },
+        )
+    response.raise_for_status()
+    body = response.json()
+    text = str(body.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    return _parse_json_object(text)
+
+
+def _signals_from_verification_response(
+    response: dict[str, Any],
+    original: RelationshipSignals,
+) -> RelationshipSignals:
+    entity_by_name = {_normalize(entity.name): entity for entity in original.entities}
+    approved_entities: list[EntitySignal] = []
+    for item in _list_of_dicts(response.get("entities")):
+        if item.get("approved") is not True:
+            continue
+        name = _clean_name(str(item.get("name") or ""))
+        normalized = _normalize(name)
+        source = entity_by_name.get(normalized)
+        if not name or (not source and _is_noise_name(name)):
+            continue
+        entity_type = str(item.get("entity_type") or (source.entity_type if source else "")).lower()
+        if entity_type not in {"company", "investor", "person"}:
+            continue
+        roles = tuple(
+            role
+            for role in [str(value).strip().lower() for value in item.get("roles", []) if str(value).strip()]
+            if role
+        ) or (source.roles if source else ("mentioned",))
+        confidence = _bounded_confidence(item.get("confidence"), source.confidence if source else 0.75)
+        approved_entities.append(
+            EntitySignal(
+                name=name,
+                entity_type=entity_type,
+                roles=roles,
+                confidence=confidence,
+                excerpt=source.excerpt if source else str(item.get("reason") or name),
+                sector=_clean_optional(item.get("sector")),
+                geography=_clean_optional(item.get("geography")),
+                website_url=_clean_optional(item.get("website_url")),
+                contact_email=_clean_optional(item.get("contact_email")),
+            )
+        )
+    approved_entity_names = {_normalize(entity.name) for entity in approved_entities}
+    if not approved_entities:
+        return RelationshipSignals([], [], [], [])
+
+    interactions = _approved_by_title(response.get("interactions"), original.interactions, "title")
+    actions = _approved_by_title(response.get("actions"), original.actions, "title")
+    deals = _approved_by_title(response.get("deals"), original.deals, "name")
+    if not approved_entity_names:
+        interactions = []
+        actions = []
+        deals = []
+    return RelationshipSignals(
+        entities=_dedupe_entities(approved_entities),
+        interactions=interactions,
+        actions=actions,
+        deals=deals,
+    )
+
+
+def _approved_by_title(items: Any, originals: list[Any], field: str) -> list[Any]:
+    original_by_key = {_normalize(str(getattr(item, field))): item for item in originals}
+    approved = []
+    for item in _list_of_dicts(items):
+        if item.get("approved") is not True:
+            continue
+        key = _normalize(str(item.get(field) or item.get("title") or item.get("name") or ""))
+        original = original_by_key.get(key)
+        if original:
+            approved.append(original)
+    return approved
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("OpenAI verifier returned non-JSON content.") from exc
+        parsed = json.loads(cleaned[start : end + 1])
+    if not isinstance(parsed, dict):
+        raise ValueError("OpenAI verifier returned an invalid JSON payload.")
+    return parsed
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _bounded_confidence(value: Any, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return max(0.0, min(1.0, parsed))
+
+
+def _clean_optional(value: Any) -> str | None:
+    cleaned = str(value or "").strip()
+    return cleaned[:500] or None
+
+
+def _entity_metadata(signal: EntitySignal, source_metadata: dict[str, Any]) -> dict[str, Any]:
+    metadata = {"sources": [source_metadata]}
+    if signal.contact_email:
+        metadata["contact_email"] = signal.contact_email
+    return metadata
+
+
 def _entity_signals_from_suffixes(text: str) -> list[EntitySignal]:
     signals = []
     for match in COMPANY_SUFFIX_RE.finditer(text):
@@ -417,10 +826,13 @@ def _action_signals(lines: list[str]) -> list[ActionSignal]:
             if title:
                 signals.append(ActionSignal(title, _priority(line), _parse_first_date(line), 0.82, line[:700]))
                 continue
-        if re.search(r"\b(follow up|send|share|schedule|prepare|circulate|introduce|confirm)\b", line, re.IGNORECASE):
-            if re.match(r"^\s*[-*]\s+", line):
-                title = _clean_action(re.sub(r"^\s*[-*]\s+", "", line))
-                signals.append(ActionSignal(title, _priority(line), _parse_first_date(line), 0.62, line[:700]))
+        if re.search(
+            r"\b(follow up|send|share|schedule|prepare|circulate|introduce|confirm)\b",
+            line,
+            re.IGNORECASE,
+        ) and re.match(r"^\s*[-*]\s+", line):
+            title = _clean_action(re.sub(r"^\s*[-*]\s+", "", line))
+            signals.append(ActionSignal(title, _priority(line), _parse_first_date(line), 0.62, line[:700]))
     return _dedupe_actions(signals)
 
 
@@ -471,15 +883,23 @@ def _upsert_entity(
             entity_type=signal.entity_type,
             confidence=signal.confidence,
             summary=_signal_summary(signal),
+            sector=signal.sector,
+            geography=signal.geography,
+            website_url=signal.website_url,
             status="suggested",
-            metadata_json={"sources": [source_metadata]},
+            metadata_json=_entity_metadata(signal, source_metadata),
         )
         db.add(entity)
         db.flush()
     else:
         entity.confidence = max(float(entity.confidence or 0), signal.confidence)
         entity.summary = entity.summary or _signal_summary(signal)
+        entity.sector = entity.sector or signal.sector
+        entity.geography = entity.geography or signal.geography
+        entity.website_url = entity.website_url or signal.website_url
         entity.metadata_json = _append_source(entity.metadata_json, source_metadata)
+        if signal.contact_email:
+            entity.metadata_json = {**entity.metadata_json, "contact_email": signal.contact_email}
     db.add(
         EntityMention(
             organization_id=organization_id,

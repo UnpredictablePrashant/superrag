@@ -561,6 +561,27 @@ class EntityMention(UUIDMixin, TimestampMixin, Base):
     confidence: Mapped[float | None] = mapped_column(Numeric)
 
 
+class RelationshipScanRun(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "relationship_scan_runs"
+    __table_args__ = (
+        Index("ix_relationship_scan_runs_org_status", "organization_id", "status"),
+        Index("ix_relationship_scan_runs_org_created", "organization_id", "created_at"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    scan_type: Mapped[str] = mapped_column(String(80), default="documents", nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="queued", nullable=False)
+    options: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    total_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_scanned_document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id"))
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ModelProfile(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "model_profiles"
 

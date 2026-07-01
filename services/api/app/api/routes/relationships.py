@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import false, func, or_, select
+from sqlalchemy import delete, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import AuthContext, capability, request_meta, require_organization
@@ -13,11 +13,14 @@ from app.models.entities import (
     ActionItem,
     Deal,
     DealParticipant,
+    EntityMention,
     Interaction,
     InteractionParticipant,
     RelationshipEntity,
+    RelationshipEntityAlias,
     RelationshipEvidence,
     RelationshipRole,
+    RelationshipScanRun,
 )
 from app.schemas.api import (
     ActionItemCreateIn,
@@ -25,16 +28,18 @@ from app.schemas.api import (
     ActionItemPatchIn,
     DealOut,
     InteractionOut,
+    RelationshipDeleteAllOut,
     RelationshipEntityDetailOut,
     RelationshipEntityOut,
     RelationshipEvidenceOut,
     RelationshipRescanIn,
-    RelationshipRescanOut,
     RelationshipRoleOut,
+    RelationshipScanRunOut,
     RelationshipSummaryOut,
+    RelationshipWebDiscoveryIn,
 )
 from app.services.audit import write_audit_log
-from app.services.relationship_intelligence import rescan_relationship_intelligence
+from app.workers.tasks import process_relationship_scan_task
 
 router = APIRouter(prefix="/relationships", tags=["relationships"])
 
@@ -336,31 +341,129 @@ def patch_action_item(
     return _action_out(db, action)
 
 
-@router.post("/rescan", response_model=RelationshipRescanOut)
+@router.get("/scan-runs/latest", response_model=RelationshipScanRunOut | None)
+def latest_relationship_scan(
+    ctx: AuthContext = Depends(require_organization),
+    db: Session = Depends(get_db),
+) -> RelationshipScanRunOut | None:
+    run = db.scalar(
+        select(RelationshipScanRun)
+        .where(RelationshipScanRun.organization_id == ctx.organization_id)
+        .order_by(RelationshipScanRun.created_at.desc())
+        .limit(1)
+    )
+    return _scan_run_out(db, run) if run else None
+
+
+@router.post("/rescan", response_model=RelationshipScanRunOut)
 def rescan_relationships(
     payload: RelationshipRescanIn,
     request: Request,
     ctx: AuthContext = Depends(capability("run_ingestion")),
     db: Session = Depends(get_db),
-) -> RelationshipRescanOut:
-    result = rescan_relationship_intelligence(
-        db,
+) -> RelationshipScanRunOut:
+    active = _active_scan(db, ctx.organization_id)
+    if active:
+        return _scan_run_out(db, active)
+    run = RelationshipScanRun(
         organization_id=ctx.organization_id,
-        document_ids=payload.document_ids or None,
+        requested_by_user_id=ctx.user.id,
+        scan_type="documents",
+        status="queued",
+        options={"document_ids": [str(value) for value in payload.document_ids], "incremental": not payload.document_ids},
     )
+    db.add(run)
+    db.flush()
     ip, ua = request_meta(request)
     write_audit_log(
         db,
         organization_id=ctx.organization_id,
         actor_user_id=ctx.user.id,
-        action="relationship.rescan",
-        resource_type="relationship_intelligence",
-        metadata={"document_count": len(payload.document_ids), **result},
+        action="relationship.scan_queued",
+        resource_type="relationship_scan_run",
+        resource_id=str(run.id),
+        metadata={"document_count": len(payload.document_ids), "scan_type": run.scan_type},
         ip_address=ip,
         user_agent=ua,
     )
     db.commit()
-    return RelationshipRescanOut(**result)
+    process_relationship_scan_task.delay(str(run.id))
+    db.refresh(run)
+    return _scan_run_out(db, run)
+
+
+@router.post("/web-discovery", response_model=RelationshipScanRunOut)
+def discover_relationships_from_web(
+    payload: RelationshipWebDiscoveryIn,
+    request: Request,
+    ctx: AuthContext = Depends(capability("run_ingestion")),
+    db: Session = Depends(get_db),
+) -> RelationshipScanRunOut:
+    active = _active_scan(db, ctx.organization_id)
+    if active:
+        return _scan_run_out(db, active)
+    run = RelationshipScanRun(
+        organization_id=ctx.organization_id,
+        requested_by_user_id=ctx.user.id,
+        scan_type="web_discovery",
+        status="queued",
+        options={"query": payload.query or None},
+    )
+    db.add(run)
+    db.flush()
+    ip, ua = request_meta(request)
+    write_audit_log(
+        db,
+        organization_id=ctx.organization_id,
+        actor_user_id=ctx.user.id,
+        action="relationship.web_discovery_queued",
+        resource_type="relationship_scan_run",
+        resource_id=str(run.id),
+        ip_address=ip,
+        user_agent=ua,
+    )
+    db.commit()
+    process_relationship_scan_task.delay(str(run.id))
+    db.refresh(run)
+    return _scan_run_out(db, run)
+
+
+@router.delete("/all", response_model=RelationshipDeleteAllOut)
+def delete_all_relationship_intelligence(
+    request: Request,
+    ctx: AuthContext = Depends(capability("manage_settings")),
+    db: Session = Depends(get_db),
+) -> RelationshipDeleteAllOut:
+    org_id = ctx.organization_id
+    deleted: dict[str, int] = {}
+    for name, model in [
+        ("entity_mentions", EntityMention),
+        ("relationship_evidence", RelationshipEvidence),
+        ("action_items", ActionItem),
+        ("interaction_participants", InteractionParticipant),
+        ("interactions", Interaction),
+        ("deal_participants", DealParticipant),
+        ("deals", Deal),
+        ("relationship_roles", RelationshipRole),
+        ("relationship_entity_aliases", RelationshipEntityAlias),
+        ("relationship_entities", RelationshipEntity),
+        ("relationship_scan_runs", RelationshipScanRun),
+    ]:
+        result = db.execute(delete(model).where(model.organization_id == org_id))
+        deleted[name] = int(result.rowcount or 0)
+    ip, ua = request_meta(request)
+    write_audit_log(
+        db,
+        organization_id=org_id,
+        actor_user_id=ctx.user.id,
+        action="relationship.delete_all",
+        resource_type="relationship_intelligence",
+        metadata=deleted,
+        ip_address=ip,
+        user_agent=ua,
+    )
+    db.commit()
+    return RelationshipDeleteAllOut(deleted=deleted)
 
 
 def _count(db: Session, model, org_id: UUID) -> int:
@@ -497,3 +600,28 @@ def _validate_related_records(
         interaction = db.get(Interaction, interaction_id)
         if not interaction or interaction.organization_id != org_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Interaction not found.")
+
+
+def _active_scan(db: Session, org_id: UUID) -> RelationshipScanRun | None:
+    return db.scalar(
+        select(RelationshipScanRun)
+        .where(
+            RelationshipScanRun.organization_id == org_id,
+            RelationshipScanRun.status.in_(["queued", "running"]),
+        )
+        .order_by(RelationshipScanRun.created_at.desc())
+        .limit(1)
+    )
+
+
+def _scan_run_out(db: Session, run: RelationshipScanRun) -> RelationshipScanRunOut:
+    name = None
+    if run.last_scanned_document_id:
+        from app.models.entities import Document
+
+        document = db.get(Document, run.last_scanned_document_id)
+        name = document.name if document else None
+    return RelationshipScanRunOut(
+        **RelationshipScanRunOut.model_validate(run).model_dump(exclude={"last_scanned_document_name"}),
+        last_scanned_document_name=name,
+    )

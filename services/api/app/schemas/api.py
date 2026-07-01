@@ -577,6 +577,31 @@ class RelationshipRescanOut(BaseModel):
     deals: int
 
 
+class RelationshipScanRunOut(APIModel):
+    id: UUID
+    scan_type: str
+    status: str
+    options: dict[str, Any]
+    total_count: int
+    processed_count: int
+    last_scanned_document_id: UUID | None
+    result: dict[str, Any]
+    error: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    last_scanned_document_name: str | None = None
+
+
+class RelationshipDeleteAllOut(BaseModel):
+    deleted: dict[str, int]
+
+
+class RelationshipWebDiscoveryIn(BaseModel):
+    query: str | None = Field(default=None, max_length=2000)
+
+
 class ProfileOut(APIModel):
     id: UUID
     name: str
